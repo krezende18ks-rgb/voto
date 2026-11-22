@@ -12,3 +12,17 @@ votação-dist/
 *.dump
 coverage/
 test-results/
+
+# Arquivos auxiliares de desenvolvimento
+/.claude/
+/.impeccable/
+
+# Backups e arquivos locais
+/Nova pasta/
+/voto.zip
+
+# Dependências
+**/node_modules/
+
+# Backups de migrations
+/voto/server/migrations/*.backup*
