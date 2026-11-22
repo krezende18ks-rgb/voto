@@ -1,0 +1,2 @@
+ALTER TABLE election_status
+ADD COLUMN IF NOT EXISTS ended_at TIMESTAMPTZ;

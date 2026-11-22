@@ -1,0 +1,134 @@
+/* Estilos para a Ata Eleitoral e Impressão A4 */
+
+.ata-container {
+  max-width: 850px;
+  margin: 20px auto;
+  padding: 30px;
+  background: #fff;
+  font-family: 'Times New Roman', Times, serif, Arial, sans-serif;
+  color: #000;
+  box-shadow: 0 0 10px rgba(0,0,0,0.1);
+}
+
+.print-controls {
+  margin-bottom: 20px;
+  text-align: right;
+}
+
+.btn-print {
+  background-color: #2563eb;
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  font-size: 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: Arial, sans-serif;
+}
+
+.btn-print:hover {
+  background-color: #1d4ed8;
+}
+
+.ata-header {
+  text-align: center;
+  border-bottom: 2px solid #000;
+  padding-bottom: 15px;
+  margin-bottom: 20px;
+}
+
+.ata-header h1 {
+  font-size: 18pt;
+  margin-bottom: 10px;
+}
+
+.ata-header p {
+  font-size: 11pt;
+  margin: 4px 0;
+}
+
+.ata-section {
+  margin-bottom: 30px;
+}
+
+.ata-section h2 {
+  font-size: 14pt;
+  border-bottom: 1px solid #ccc;
+  padding-bottom: 5px;
+  margin-bottom: 10px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 10px;
+  font-size: 11pt;
+}
+
+th, td {
+  border: 1px solid #333;
+  padding: 8px 12px;
+  text-align: left;
+}
+
+th {
+  background-color: #f3f4f6;
+}
+
+.assinatura-cell {
+  height: 35px;
+}
+
+.ata-footer {
+  margin-top: 40px;
+  font-size: 10pt;
+  text-align: center;
+}
+
+.assinaturas {
+  display: flex;
+  justify-content: space-around;
+  margin-top: 60px;
+}
+
+.assinatura-box {
+  width: 40%;
+  text-align: center;
+}
+
+.linha-assinatura {
+  border-top: 1px solid #000;
+  margin-bottom: 5px;
+}
+
+/* Regras específicas para impressão em 2 páginas A4 */
+@media print {
+  body {
+    background: none;
+  }
+
+  .print-controls {
+    display: none;
+  }
+
+  .ata-container {
+    box-shadow: none;
+    margin: 0;
+    padding: 0;
+    max-width: 100%;
+    font-size: 12pt;
+  }
+
+  .page-break {
+    page-break-before: always;
+  }
+
+  @page {
+    size: A4;
+    margin: 2cm;
+  }
+
+  tr {
+    page-break-inside: avoid;
+  }
+}

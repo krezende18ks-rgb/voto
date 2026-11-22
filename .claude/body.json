@@ -1,0 +1,10 @@
+
+{
+  "model": "opencode/deepseek-v4-flash-free",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Responda apenas OK"
+    }
+  ]
+}

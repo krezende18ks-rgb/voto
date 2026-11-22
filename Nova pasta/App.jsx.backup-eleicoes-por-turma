@@ -1,0 +1,1527 @@
+import React, { useState, useEffect, createContext, useContext, useRef } from 'react';
+import { isCandidateEligible, tallyResults } from './election.js';
+
+// API same-origin: funciona no computador e em celulares conectados pela rede local.
+const API_URL = '';
+const AppContext = createContext();
+let authToken = sessionStorage.getItem('authToken') || '';
+const apiFetch = (url, options = {}) => {
+  const headers = new Headers(options.headers || {});
+  if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  if (authToken) headers.set('Authorization', `Bearer ${authToken}`);
+  return fetch(url, { ...options, headers }).then((response) => {
+    if (response.status === 401 && authToken) {
+      authToken = '';
+      sessionStorage.removeItem('authToken');
+      sessionStorage.removeItem('currentUser');
+      window.dispatchEvent(new Event('classvote:unauthorized'));
+    }
+    return response;
+  });
+};
+
+export default function App() {
+  const [isLoggedIn, setIsLoggedIn] = useState(Boolean(sessionStorage.getItem('authToken') && sessionStorage.getItem('currentUser')));
+  const [user, setUser] = useState(() => {
+    try {
+      return JSON.parse(sessionStorage.getItem('currentUser') || 'null');
+    } catch {
+      sessionStorage.removeItem('currentUser');
+      sessionStorage.removeItem('authToken');
+      authToken = '';
+      return null;
+    }
+  });
+  const [role, setRole] = useState(() => { try { return JSON.parse(sessionStorage.getItem('currentUser') || 'null')?.role || 'voter'; } catch { return 'voter'; } });
+  const [hasVoted, setHasVoted] = useState(false);
+  const [results, setResults] = useState([]);
+
+  // Adiciona cabeçalhos de autenticação para as requisições
+  const getHeaders = () => ({
+    'Content-Type': 'application/json',
+    ...(authToken ? { Authorization: `Bearer ${authToken}` } : {})
+  });
+
+  const [view, setView] = useState(role === 'voter' ? 'voting' : 'dashboard');
+  const [theme, setTheme] = useState(localStorage.getItem('theme') || 'light');
+
+  const [candidates, setCandidates] = useState([]);
+  const [votes, setVotes] = useState([]);
+  const [blockchain, setBlockchain] = useState([]);
+  const [courses, setCourses] = useState([]);
+  const [turmas, setTurmas] = useState([]);
+  const [usersList, setUsersList] = useState([]);
+
+  const [votingStarted, setVotingStarted] = useState(false);
+  const [votingEnded, setVotingEnded] = useState(false);
+  const [electionEndedAt, setElectionEndedAt] = useState(null);
+  const [notification, setNotification] = useState({ show: false, message: '', type: 'success' });
+
+  const [showCandidateModal, setShowCandidateModal] = useState(false);
+  const [showUserModal, setShowUserModal] = useState(false);
+  const [showQrModal, setShowQrModal] = useState(false);
+
+  useEffect(() => {
+    if (isLoggedIn) fetchData();
+  }, [isLoggedIn]);
+
+  useEffect(() => {
+    const handleUnauthorized = () => { setIsLoggedIn(false); setUser(null); setRole('voter'); };
+    window.addEventListener('classvote:unauthorized', handleUnauthorized);
+    return () => window.removeEventListener('classvote:unauthorized', handleUnauthorized);
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('theme', theme);
+  }, [theme]);
+
+  const fetchData = async () => {
+    try {
+      
+      const candsUrl = `${API_URL}/candidates`;
+      const isVoter = user?.role === 'voter';
+      const votesUrl = isVoter ? `${API_URL}/my-participation` : `${API_URL}/votes`;
+      const usersUrl = isVoter ? null : `${API_URL}/users`;
+
+      const [candsRes, votesRes, chainRes, coursesRes, turmasRes, usersRes, statusRes, resultsRes] = await Promise.all([
+        apiFetch(candsUrl).catch(() => null),
+        apiFetch(votesUrl).catch(() => null),
+        isVoter ? Promise.resolve(null) : apiFetch(`${API_URL}/blockchain`).catch(() => null),
+        apiFetch(`${API_URL}/courses`).catch(() => null),
+        apiFetch(`${API_URL}/turmas`).catch(() => null),
+        usersUrl ? apiFetch(usersUrl).catch(() => null) : Promise.resolve(null),
+        apiFetch(`${API_URL}/election-status`).catch(() => null),
+        isVoter ? Promise.resolve(null) : apiFetch(`${API_URL}/results`).catch(() => null)
+      ]);
+
+      if (candsRes && candsRes.ok) {
+        const cands = await candsRes.json();
+        setCandidates(cands);
+      }
+      if (votesRes && votesRes.ok) {
+        const voteData = await votesRes.json();
+        if (isVoter) setHasVoted(Boolean(voteData.voted)); else setVotes(voteData);
+      }
+      if (resultsRes && resultsRes.ok) setResults(await resultsRes.json());
+      if (chainRes && chainRes.ok) setBlockchain(await chainRes.json());
+      if (coursesRes && coursesRes.ok) setCourses(await coursesRes.json());
+      if (turmasRes && turmasRes.ok) setTurmas(await turmasRes.json());
+      if (usersRes && usersRes.ok) setUsersList(await usersRes.json());
+      if (statusRes && statusRes.ok) {
+        const status = await statusRes.json();
+        setVotingStarted(status.started);
+        setVotingEnded(status.ended);
+        setElectionEndedAt(status.endedAt || null);
+      }
+    } catch (err) {
+      console.warn('Erro ao buscar dados:', err);
+    }
+  };
+
+  const showToast = (message, type = 'success') => {
+    setNotification({ show: true, message, type });
+    setTimeout(() => setNotification(prev => ({ ...prev, show: false })), 3000);
+  };
+
+  const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'light' : 'dark');
+
+  const logout = () => {
+    sessionStorage.removeItem('authToken');
+    sessionStorage.removeItem('currentUser');
+    localStorage.removeItem('currentUser');
+    localStorage.removeItem('isLoggedIn');
+    localStorage.removeItem('userRole');
+    authToken = '';
+    setHasVoted(false);
+    setIsLoggedIn(false);
+    setUser(null);
+    showToast('Logout realizado com sucesso');
+  };
+
+  if (!isLoggedIn) {
+    return <LoginView setIsLoggedIn={setIsLoggedIn} setUser={setUser} setRole={setRole} setView={setView} showToast={showToast} />;
+  }
+
+  return (
+    <AppContext.Provider value={{
+      user, role, view, setView, theme, toggleTheme, logout,
+      candidates, votes, results, blockchain, courses, turmas, usersList, hasVoted,
+      votingStarted, setVotingStarted, votingEnded, setVotingEnded,
+      electionEndedAt,
+      showToast, fetchData, getHeaders,
+      showCandidateModal, setShowCandidateModal,
+      showUserModal, setShowUserModal,
+      showQrModal, setShowQrModal
+    }}>
+      <div className="app-container">
+        <a className="skip-link" href="#main-content">Pular para o conteúdo</a>
+        <header>
+          <h1 className="header-title">🗳️ Sistema de Votação Blockchain</h1>
+          <div className="header-controls">
+            <span className="role-badge">👤 {role === 'voter' ? 'Eleitor/Aluno' : role === 'teacher' ? 'Professor' : role === 'coordinator' ? 'Coordenador' : 'Reitor'} - {user?.name}</span>
+            <button type="button" onClick={toggleTheme} aria-label={theme === 'dark' ? 'Ativar tema claro' : 'Ativar tema escuro'} title={theme === 'dark' ? 'Ativar tema claro' : 'Ativar tema escuro'}>{theme === 'dark' ? '☀️' : '🌙'}</button>
+            <button onClick={logout}>🚪 Sair</button>
+          </div>
+        </header>
+
+        <div className="main-content">
+          <Sidebar />
+          <main id="main-content" className="content-area" tabIndex={-1}>
+            {view === 'dashboard' && <Dashboard />}
+            {view === 'voting' && <Voting />}
+            {view === 'candidates' && <Candidates />}
+            {view === 'monitoring' && <Monitoring />}
+            {view === 'blockchain' && <Blockchain />}
+            {view === 'usersManagement' && <UsersManagement />}
+            {view === 'students' && <StudentManagement />}
+            {view === 'teachers' && <TeacherManagement />}
+            {view === 'courseManagement' && <CourseManagement />}
+            {view === 'ata' && <Ata />}
+          </main>
+        </div>
+      </div>
+
+      {showCandidateModal && <CandidateModal />}
+      {showUserModal && <UserModal />}
+      {showQrModal && <QrModal />}
+
+      {notification.show && (
+        <div role="status" aria-live="polite" aria-atomic="true" style={{
+          position: 'fixed', bottom: '24px', right: '24px',
+          background: notification.type === 'error' ? 'var(--critical)' : 'var(--success)',
+          color: 'white', padding: '12px 24px', borderRadius: '8px',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.15)', zIndex: 2000, fontWeight: 500
+        }}>
+          {notification.message}
+        </div>
+      )}
+    </AppContext.Provider>
+  );
+}
+
+function LoginView({ setIsLoggedIn, setUser, setRole, setView, showToast }) {
+  const [tabRole, setTabRole] = useState('voter');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [remember, setRemember] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    const remembered = localStorage.getItem('rememberedEmail');
+    if (remembered) {
+      setEmail(remembered);
+      setRemember(true);
+    }
+  }, []);
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setIsLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, role: tabRole })
+      });
+      const result = await res.json();
+      if (!res.ok) {
+        showToast(result.error || 'Email ou senha incorretos', 'error');
+        setIsLoading(false);
+        return;
+      }
+      const userData = result.user;
+      authToken = result.token;
+      sessionStorage.setItem('authToken', result.token);
+      sessionStorage.setItem('currentUser', JSON.stringify(userData));
+      if (remember) localStorage.setItem('rememberedEmail', email);
+
+      setUser(userData);
+      setRole(tabRole);
+      setView(tabRole === 'voter' ? 'voting' : 'dashboard');
+      setIsLoggedIn(true);
+      showToast(`Bem-vindo, ${userData.name}!`);
+    } catch (err) {
+      showToast('Erro ao conectar ao servidor', 'error');
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', width: '100%' }}>
+      <div className="login-wrapper">
+        <div className="login-branding">
+          <div className="brand-icon">🗳️</div>
+          <h1 className="brand-title">Sistema de Votação</h1>
+          <p className="brand-desc">Votação segura e transparente com blockchain</p>
+          <div className="brand-features" style={{ marginTop: '20px', textAlign: 'left', fontSize: '13px' }}>
+            <div>✓ Votação segura e auditável</div>
+            <div>✓ Registro imutável em blockchain</div>
+            <div>✓ Acesso para múltiplos perfis</div>
+            <div>✓ Monitoramento em tempo real</div>
+          </div>
+        </div>
+        <div className="login-form-container">
+          <div className="form-header">
+            <h2 className="form-title">Bem-vindo</h2>
+            <p className="form-subtitle">Faça login com suas credenciais</p>
+          </div>
+          <div className="role-tabs">
+            {['voter', 'teacher', 'coordinator', 'rector'].map(r => (
+              <button key={r} type="button" aria-pressed={tabRole === r} className={`role-tab ${tabRole === r ? 'active' : ''}`} onClick={() => setTabRole(r)}>
+                {r === 'voter' ? '👨‍🎓 Aluno' : r === 'teacher' ? '👨‍🏫 Prof.' : r === 'coordinator' ? '👔 Coord.' : '🎓 Reitor'}
+              </button>
+            ))}
+          </div>
+          <form onSubmit={handleLogin}>
+            <div className="form-group">
+              <label htmlFor="login-email">Email</label>
+              <input id="login-email" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="seu@email.com" required />
+            </div>
+            <div className="form-group">
+              <label htmlFor="login-password">Senha</label>
+              <input id="login-password" type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" required />
+            </div>
+            <div className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <input type="checkbox" id="remember" checked={remember} onChange={e => setRemember(e.target.checked)} style={{ width: 'auto' }} />
+              <label htmlFor="remember" style={{ margin: 0 }}>Manter conectado</label>
+            </div>
+            <button type="submit" className="primary" disabled={isLoading}>
+              {isLoading ? 'Entrando...' : 'Entrar'}
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Sidebar() {
+  const { role, view, setView } = useContext(AppContext);
+  const items = {
+    voter: [{ id: 'voting', label: '✅ Votar' }],
+    teacher: [{ id: 'dashboard', label: '📊 Dashboard' }, { id: 'candidates', label: '🎯 Candidatos' }],
+    coordinator: [
+      { id: 'dashboard', label: '📊 Dashboard' },
+      { id: 'candidates', label: '🎯 Candidatos' },
+      { id: 'students', label: '👨‍🎓 Alunos' },
+      { id: 'teachers', label: '👨‍🏫 Professores' },
+      { id: 'courseManagement', label: '🏫 Turmas' },
+      { id: 'blockchain', label: '🔗 Blockchain' },
+      { id: 'ata', label: '📄 Ata' }
+    ],
+    rector: [
+      { id: 'dashboard', label: '📊 Dashboard' },
+      { id: 'monitoring', label: '👁️ Monitoramento' },
+      { id: 'students', label: '👨‍🎓 Alunos' },
+      { id: 'teachers', label: '👨‍🏫 Professores' },
+      { id: 'usersManagement', label: '👥 Coordenadores' },
+      { id: 'courseManagement', label: '🏫 Cursos e Turmas' },
+      { id: 'blockchain', label: '🔗 Blockchain' }
+    ]
+  };
+
+  return (
+    <nav className="sidebar" aria-label="Navegação principal">
+      {(items[role] || []).map(item => (
+        <button type="button" key={item.id} className={`nav-item ${view === item.id ? 'active' : ''}`} aria-current={view === item.id ? 'page' : undefined} onClick={() => setView(item.id)}>
+          {item.label}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+function Dashboard() {
+  const { user,role, votes = [], candidates = [], courses = [], turmas = [], votingStarted, setVotingStarted, votingEnded, setVotingEnded, showToast, setShowQrModal, setView, getHeaders } = useContext(AppContext);
+
+  const startVoting = async () => {
+    if (votingStarted) return;
+    if (confirm('Iniciar votação?')) {
+      try {
+        const res = await apiFetch(`${API_URL}/election-status`, {
+          method: 'POST',
+          headers: getHeaders(),
+          body: JSON.stringify({ key: 'started', value: true })
+        });
+        if (res.ok) {
+          setVotingStarted(true);
+          showToast('Votação iniciada!');
+        } else {
+          showToast('Erro ao iniciar votação', 'error');
+        }
+      } catch {
+        showToast('Erro de conexão', 'error');
+      }
+    }
+  };
+
+  const endVoting = async () => {
+    if (votingEnded) return;
+    if (confirm('Encerrar votação?')) {
+      try {
+        const res = await apiFetch(`${API_URL}/election-status`, {
+          method: 'POST',
+          headers: getHeaders(),
+          body: JSON.stringify({ key: 'ended', value: true })
+        });
+        if (res.ok) {
+          setVotingEnded(true);
+          await fetchData();
+          showToast('Votação encerrada!');
+          setView('ata');
+        } else {
+          showToast('Erro ao encerrar votação', 'error');
+        }
+      } catch {
+        showToast('Erro de conexão', 'error');
+      }
+    }
+  };
+
+  // Se for coordenador, filtra votos pelo curso do coordenador
+  const filteredVotes = role === 'coordinator' && user?.course
+    ? votes.filter(v => v.course === user.course)
+    : votes;
+
+  const totalVotes = filteredVotes.length;
+  const visibleTurmas = role === 'coordinator' && user?.course ? turmas.filter(t => t.course === user.course) : turmas;
+  const pendingVotes = Math.max(0, (visibleTurmas.length * 15) - totalVotes);
+  const totalClasses = visibleTurmas.length;
+  const classesWithVotes = visibleTurmas.filter(t => votes.some(v => v.voterClass === t.name && v.course === t.course)).length;
+  const completionPct = totalClasses > 0 ? Math.round((classesWithVotes / totalClasses) * 100) : 0;
+
+  return (
+    <div>
+      <h2>Dashboard</h2>
+
+      {role === 'rector' && (
+        <div className="card" style={{ marginBottom: '20px' }}>
+          <div className="card-header">Progresso Geral das Eleições</div>
+          <div style={{ fontWeight: 600, marginBottom: '8px' }}>
+            {classesWithVotes} de {totalClasses} turmas com votos registrados ({completionPct}%)
+          </div>
+          <div style={{ background: 'var(--bg-tertiary)', height: '24px', borderRadius: '6px', overflow: 'hidden' }}>
+            <div style={{ transform: `scaleX(${completionPct / 100})`, transformOrigin: 'left', background: 'var(--accent)', height: '100%', transition: 'transform 0.3s ease' }}></div>
+          </div>
+        </div>
+      )}
+
+      {role === 'teacher' && (
+        <div className="card" style={{ background: 'var(--accent-light)', border: '1px solid var(--accent)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div><strong>Controle da Votação</strong><p style={{ margin: '4px 0 0 0' }}>Encerre para gerar a ata.</p></div>
+            <button className="primary" onClick={endVoting} disabled={votingEnded} style={{ background: votingEnded ? 'var(--success)' : 'var(--critical)' }}>
+              {votingEnded ? '✅ Encerrada' : '🔴 Encerrar Votação'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {role === 'coordinator' && (
+        <div className="card" style={{ background: 'var(--accent-light)', border: '1px solid var(--accent)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div><strong>Controle da Votação - {user?.course || 'Curso não definido'}</strong></div>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button className="primary" onClick={startVoting} disabled={votingStarted} style={{ background: 'var(--success)' }}>Iniciar</button>
+              <button className="primary" onClick={endVoting} disabled={votingEnded} style={{ background: 'var(--critical)' }}>Encerrar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {(role === 'teacher' || role === 'coordinator') && (
+        <div style={{ marginBottom: '20px' }}>
+          <button className="primary" onClick={() => setShowQrModal(true)}>📱 Gerar QR Code para Votação</button>
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px', marginBottom: '24px' }}>
+        <div className="card" style={{ textAlign: 'center' }}><h3>{totalVotes}</h3><p>Total de Votos {role === 'coordinator' ? `(Curso ${user?.course || 'não definido'})` : ''}</p></div>
+        <div className="card" style={{ textAlign: 'center' }}><h3>{totalVotes}</h3><p>Registrados</p></div>
+        <div className="card" style={{ textAlign: 'center' }}><h3>{pendingVotes}</h3><p>Pendentes</p></div>
+      </div>
+
+      <div className="card">
+        <div className="card-header">Cursos e Status</div>
+        <table>
+          <thead><tr><th>Curso</th><th>Total</th><th>Votantes</th><th>%</th></tr></thead>
+          <tbody>
+            {role === 'coordinator' ? (
+               visibleTurmas.map(t => {
+                  const count = filteredVotes.filter(v => v.voterClass === t.name && v.course === t.course).length;
+                  const pct = 15 > 0 ? Math.round((count / 15) * 100) : 0;
+                  return <tr key={`${t.course}-${t.name}`}><td>{t.course} · Turma {t.name}</td><td>15</td><td>{count}</td><td>{pct}%</td></tr>;
+               })
+            ) : (
+              visibleTurmas.map(t => {
+                const count = votes.filter(v => v.voterClass === t.name && v.course === t.course).length;
+                const pct = 15 > 0 ? Math.round((count / 15) * 100) : 0;
+                return <tr key={`${t.course}-${t.name}`}><td>{t.course} · Turma {t.name}</td><td>15</td><td>{count}</td><td>{pct}%</td></tr>;
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function Voting() {
+  const { user, candidates = [], votes = [], hasVoted, votingStarted, votingEnded, fetchData, showToast, getHeaders } = useContext(AppContext);
+  const [name, setName] = useState(user?.name || '');
+  const [matric, setMatric] = useState(user?.matric || '');
+  const [vClass, setVClass] = useState(user?.class || '');
+  const [selectedLeader, setSelectedLeader] = useState(null);
+  const [selectedViceLeader, setSelectedViceLeader] = useState(null);
+
+  useEffect(() => {
+    if (user) {
+      setName(user.name || '');
+      setMatric(user.matric || '');
+      setVClass(user.class || '');
+
+    }
+  }, [user]);
+
+
+  if (votingEnded) {
+    return (
+      <div>
+        <h2>Votação</h2>
+        <div className="card" style={{ textAlign: 'center', padding: '40px' }}>
+          <div style={{ fontSize: '48px', marginBottom: '16px' }}>🔴</div>
+          <h3>Votação Encerrada</h3>
+          <p style={{ color: 'var(--fg-secondary)', marginTop: '8px' }}>A votação para esta turma já foi encerrada.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!votingStarted) {
+    return (
+      <div>
+        <h2>Votação</h2>
+        <div className="card" role="status" style={{ textAlign: 'center', padding: '40px' }}>
+          <div style={{ fontSize: '48px', marginBottom: '16px' }}>🕒</div>
+          <h3>Votação ainda não iniciada</h3>
+          <p style={{ color: 'var(--fg-secondary)', marginTop: '8px' }}>Aguarde a abertura oficial da eleição.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (hasVoted) {
+    return (
+      <div>
+        <h2>Votação</h2>
+        <div className="card" style={{ textAlign: 'center', padding: '40px' }}>
+          <div style={{ fontSize: '48px', marginBottom: '16px' }}>✅</div>
+          <h3>Voto Registrado com Sucesso!</h3>
+          <p style={{ color: 'var(--fg-secondary)', marginTop: '8px' }}>Seu voto já foi computado e registrado de forma segura na blockchain para a Turma {vClass}.</p>
+        </div>
+      </div>
+    );
+  }
+
+  const submitVote = async () => {
+    if (!name || !matric || !vClass || !selectedLeader || !selectedViceLeader) {
+      showToast('Preencha todos os campos e selecione os candidatos', 'error');
+      return;
+    }
+    try {
+      const res = await apiFetch(`${API_URL}/votes`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({ leader: selectedLeader, viceLeader: selectedViceLeader })
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(result.error || 'Erro ao registrar voto');
+      }
+      showToast('Voto registrado com sucesso!');
+      setSelectedLeader(null); setSelectedViceLeader(null);
+      await fetchData();
+    } catch (err) {
+      showToast(err.message || 'Erro ao registrar voto', 'error');
+    }
+  };
+
+  // Novos registros possuem class=turma e course=curso.
+  // Registros antigos podem ter class=curso e course vazio; mantemos compatibilidade.
+  const classCandidates = candidates.filter((candidate) =>
+    isCandidateEligible(candidate, { class: vClass, course: user?.course })
+  );
+  const leaders = classCandidates.filter(c => c.position === 'leader');
+  const viceLeaders = classCandidates.filter(c => c.position === 'viceLeader');
+
+  return (
+    <div>
+      <h2>Votação</h2>
+      <div className="card">
+        <div className="card-header">Informações do Eleitor</div>
+        <div className="form-group"><label>Nome</label><input value={name} readOnly aria-readonly="true" /></div>
+        <div className="form-group"><label>Matrícula</label><input value={matric} readOnly aria-readonly="true" /></div>
+        <div className="form-group"><label>Curso</label><input value={user?.course || ''} readOnly aria-readonly="true" /></div>
+        <div className="form-group"><label htmlFor="voter-class">Turma</label><input id="voter-class" value={vClass} readOnly aria-readonly="true" /></div>
+      </div>
+      <div className="card">
+        <div className="card-header">Votação para Líder</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
+          {leaders.length === 0 ? (
+            <p style={{ color: 'var(--fg-secondary)' }}>Nenhum candidato a líder foi encontrado para sua turma/curso. Confira se o curso está preenchido no cadastro do aluno e se o candidato foi associado à turma correta.</p>
+          ) : (
+            leaders.map(c => (
+              <button type="button" key={c.id} aria-pressed={selectedLeader === c.id} onClick={() => setSelectedLeader(c.id)} style={{ padding: '16px', border: selectedLeader === c.id ? '2px solid var(--accent)' : '1px solid var(--border)', borderRadius: '8px', cursor: 'pointer', background: selectedLeader === c.id ? 'var(--accent-light)' : 'var(--bg-primary)', textAlign: 'left', width: '100%', color: 'var(--fg-primary)' }}>
+                <div style={{ fontWeight: 600 }}>{c.name}</div>
+                <div style={{ fontSize: '13px', color: 'var(--fg-secondary)' }}>Matrícula: {c.matric}</div>
+                <div style={{ fontSize: '13px', color: 'var(--fg-secondary)' }}>{c.course ? `Turma ${c.class} · ${c.course}` : `Curso ${c.class} (cadastro antigo)`}</div>
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+      <div className="card">
+        <div className="card-header">Votação para Vice-Líder</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
+          {viceLeaders.length === 0 ? (
+            <p style={{ color: 'var(--fg-secondary)' }}>Nenhum candidato a vice-líder foi encontrado para sua turma/curso. Confira se o curso está preenchido no cadastro do aluno e se o candidato foi associado à turma correta.</p>
+          ) : (
+            viceLeaders.map(c => (
+              <button type="button" key={c.id} aria-pressed={selectedViceLeader === c.id} onClick={() => setSelectedViceLeader(c.id)} style={{ padding: '16px', border: selectedViceLeader === c.id ? '2px solid var(--accent)' : '1px solid var(--border)', borderRadius: '8px', cursor: 'pointer', background: selectedViceLeader === c.id ? 'var(--accent-light)' : 'var(--bg-primary)', textAlign: 'left', width: '100%', color: 'var(--fg-primary)' }}>
+                <div style={{ fontWeight: 600 }}>{c.name}</div>
+                <div style={{ fontSize: '13px', color: 'var(--fg-secondary)' }}>Matrícula: {c.matric}</div>
+                <div style={{ fontSize: '13px', color: 'var(--fg-secondary)' }}>{c.course ? `Turma ${c.class} · ${c.course}` : `Curso ${c.class} (cadastro antigo)`}</div>
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+      <button className="primary" onClick={submitVote} style={{ width: '100%', padding: '14px', fontSize: '16px', marginTop: '16px' }}>Confirmar Voto</button>
+    </div>
+  );
+}
+
+function Candidates() {
+  const { candidates = [], setShowCandidateModal } = useContext(AppContext);
+  return (
+    <div>
+      <h2>Candidatos</h2>
+      <button className="primary" onClick={() => setShowCandidateModal(true)} style={{ marginBottom: '16px' }}>+ Adicionar Candidato</button>
+      <div className="card">
+        <table>
+          <thead><tr><th>Nome</th><th>Matrícula</th><th>Contato</th><th>Turma</th><th>Curso</th><th>Cargo</th></tr></thead>
+          <tbody>
+            {candidates.length === 0 ? (
+              <tr><td colSpan="6" style={{ textAlign: 'center' }}>Nenhum candidato</td></tr>
+            ) : (
+              candidates.map(c => (
+                <tr key={c.id}>
+                  <td>{c.name}</td>
+                  <td>{c.matric}</td>
+                  <td>{c.phone || '-'}<br/><small>{c.email}</small></td>
+                  <td>{c.class || '-'}</td>
+                  <td>{c.course || 'Cadastro antigo (curso/turma não separado)'}</td>
+                  <td>{c.position === 'leader' ? 'Líder' : 'Vice-Líder'}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function Monitoring() {
+  const { votes = [], turmas = [] } = useContext(AppContext);
+  return (
+    <div>
+      <h2>Monitoramento da Votação</h2>
+      <div className="card">
+        <div className="card-header">Progresso por Curso</div>
+        {turmas.map(t => {
+          const count = votes.filter(v => v.voterClass === t.name && v.course === t.course).length;
+          const pct = Math.round((count / 15) * 100);
+          return (
+            <div key={`${t.course}-${t.name}`} style={{ marginBottom: '16px' }}>
+              <div style={{ fontWeight: 600, marginBottom: '4px' }}>{t.course} · Turma {t.name}</div>
+              <div style={{ background: 'var(--bg-tertiary)', height: '12px', borderRadius: '4px', overflow: 'hidden' }}>
+                <div style={{ width: `${pct}%`, background: 'var(--accent)', height: '100%' }}></div>
+              </div>
+              <div style={{ fontSize: '12px', color: 'var(--fg-secondary)', marginTop: '4px' }}>{count} de 15 votos ({pct}%)</div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="card">
+        <div className="card-header">Registro de Participação (sem associação ao voto)</div>
+        <table>
+          <thead><tr><th>Eleitor</th><th>Curso e turma</th><th>Status</th></tr></thead>
+          <tbody>
+            {votes.map(v => (
+                <tr key={v.id}>
+                  <td>{v.voterName}</td>
+                  <td>{v.course} · {v.voterClass}</td>
+                  <td>Participou</td>
+                </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function Blockchain() {
+  const { blockchain = [], showToast } = useContext(AppContext);
+  const [integrity, setIntegrity] = useState(null);
+  const [verifying, setVerifying] = useState(false);
+
+  const verifyIntegrity = async () => {
+    setVerifying(true);
+    try {
+      const res = await apiFetch(`${API_URL}/blockchain/verify`);
+      const result = await res.json();
+      setIntegrity(result);
+      if (result.isValid) {
+        showToast('Blockchain íntegra!');
+      } else {
+        showToast(`Erro de integridade no bloco ${result.errorBlock}`, 'error');
+      }
+    } catch {
+      showToast('Erro ao verificar integridade', 'error');
+    } finally {
+      setVerifying(false);
+    }
+  };
+
+  return (
+    <div>
+      <h2>Registro Blockchain</h2>
+      <div className="card">
+        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          Informações da Cadeia
+          <button className="primary" onClick={verifyIntegrity} disabled={verifying} style={{ width: 'auto' }}>
+            {verifying ? 'Verificando...' : '🔍 Verificar Integridade'}
+          </button>
+        </div>
+        <p><strong>Blocos:</strong> {blockchain.length}</p>
+        <p><strong>Último Hash:</strong> <code style={{ fontSize: '11px', wordBreak: 'break-all' }}>{blockchain[blockchain.length - 1]?.hash || '-'}</code></p>
+        {integrity && (
+          <p>
+            <strong>Integridade:</strong>{' '}
+            <span style={{ color: integrity.isValid ? 'var(--success)' : 'var(--critical)', fontWeight: 600 }}>
+              {integrity.isValid ? 'Válida' : `Corrompida (Erro no bloco ${integrity.errorBlock})`}
+            </span>
+          </p>
+        )}
+      </div>
+      <div className="card">
+        <div className="card-header">Blocos Registrados</div>
+        {blockchain.map(b => (
+          <div key={b.idx} style={{ background: 'var(--bg-tertiary)', padding: '12px', borderRadius: '6px', marginBottom: '12px', fontSize: '12px', fontFamily: 'monospace' }}>
+            <div style={{ fontWeight: 600, marginBottom: '6px', fontSize: '14px' }}>Bloco #{b.idx}</div>
+            <div><strong>Hash:</strong> {b.hash}</div>
+            <div><strong>Hash Anterior:</strong> {b.previousHash}</div>
+            <div><strong>Dados:</strong> {b.data?.type || 'Voto anônimo'}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function StudentManagement() {
+  const { user, role, usersList = [], showToast, fetchData, courses = [], getHeaders } = useContext(AppContext);
+  const availableCourses = role === 'coordinator' ? courses.filter(c => c === user?.course) : courses;
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [matric, setMatric] = useState('');
+  const [selectedCourse, setSelectedCourse] = useState('');
+  const [selectedTurma, setSelectedTurma] = useState('');
+  const [availableTurmas, setAvailableTurmas] = useState([]);
+
+  useEffect(() => {
+    if (selectedCourse) {
+      apiFetch(`${API_URL}/turmas?course=${selectedCourse}`)
+        .then(res => res.json())
+        .then(data => setAvailableTurmas(data))
+        .catch(() => setAvailableTurmas([]));
+    } else {
+      setAvailableTurmas([]);
+      setSelectedTurma('');
+    }
+  }, [selectedCourse]);
+
+  const addStudent = async () => {
+    if (!name || !email || !password || !matric || !selectedCourse || !selectedTurma) {
+      showToast('Preencha nome, email, senha, curso e turma', 'error');
+      return;
+    }
+    try {
+      const res = await apiFetch(`${API_URL}/users`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({ name, email, password, role: 'voter', matric, cClass: selectedTurma, course: selectedCourse })
+      });
+      if (!res.ok) throw new Error();
+      showToast('Aluno adicionado com sucesso');
+      fetchData();
+      setName(''); setEmail(''); setPassword(''); setMatric(''); setSelectedCourse(''); setSelectedTurma('');
+    } catch {
+      showToast('Erro ao adicionar aluno', 'error');
+    }
+  };
+
+  const removeStudent = async (email) => {
+    if (!confirm(`Remover aluno ${email}?`)) return;
+    try {
+      const res = await apiFetch(`${API_URL}/users/${encodeURIComponent(email)}`, { method: 'DELETE', headers: getHeaders() });
+      if (!res.ok) throw new Error();
+      showToast('Aluno removido com sucesso');
+      fetchData();
+    } catch {
+      showToast('Erro ao remover aluno', 'error');
+    }
+  };
+
+  const voters = usersList.filter(u => u.role === 'voter');
+
+  return (
+    <div>
+      <h2>Gerenciamento de Alunos</h2>
+
+      <div className="card">
+        <div className="card-header">Adicionar Aluno</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="Nome" />
+          <input value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" />
+          <input value={password} onChange={e => setPassword(e.target.value)} placeholder="Senha" type="password" />
+          <input value={matric} onChange={e => setMatric(e.target.value)} placeholder="Matrícula" />
+          <select value={selectedCourse} onChange={e => setSelectedCourse(e.target.value)}>
+            <option value="">Selecione o Curso</option>
+            {availableCourses.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <select value={selectedTurma} onChange={e => setSelectedTurma(e.target.value)} disabled={!selectedCourse}>
+            <option value="">Selecione a Turma</option>
+            {availableTurmas.map(t => <option key={t.name} value={t.name}>Turma {t.name}</option>)}
+          </select>
+          <button className="primary" onClick={addStudent}>Adicionar Aluno</button>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-header">Alunos Cadastrados</div>
+        <table>
+          <thead>
+            <tr><th>Nome</th><th>Email</th><th>Matrícula</th><th>Curso</th><th>Turma</th><th>Ações</th></tr>
+          </thead>
+          <tbody>
+            {voters.map(v => (
+              <tr key={v.email}>
+                <td>{v.name}</td>
+                <td>{v.email}</td>
+                <td>{v.matric || '-'}</td>
+                <td>{v.course || '-'}</td>
+                <td>{v.class || '-'}</td>
+                <td>
+                  <button onClick={() => removeStudent(v.email)} style={{ background: 'none', border: 'none', color: 'red', cursor: 'pointer', fontWeight: 600 }}>Remover</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function TeacherManagement() {
+  const { user, role, usersList = [], showToast, fetchData, courses = [], getHeaders } = useContext(AppContext);
+  const availableCourses = role === 'coordinator' ? courses.filter(c => c === user?.course) : courses;
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [matric, setMatric] = useState('');
+  const [selectedCourse, setSelectedCourse] = useState('');
+
+  const addTeacher = async () => {
+    if (!name || !email || !password || !selectedCourse) {
+      showToast('Preencha nome, email, senha e curso', 'error');
+      return;
+    }
+    try {
+      const res = await apiFetch(`${API_URL}/users`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({ name, email, password, matric, role: 'teacher', course: selectedCourse })
+      });
+      if (!res.ok) throw new Error();
+      showToast('Professor adicionado com sucesso');
+      fetchData();
+      setName(''); setEmail(''); setPassword(''); setMatric(''); setSelectedCourse('');
+    } catch {
+      showToast('Erro ao adicionar professor', 'error');
+    }
+  };
+
+  const removeTeacher = async (email) => {
+    if (!confirm(`Remover professor ${email}?`)) return;
+    try {
+      const res = await apiFetch(`${API_URL}/users/${encodeURIComponent(email)}`, {
+        method: 'DELETE',
+        headers: getHeaders()
+      });
+      if (!res.ok) throw new Error();
+      showToast('Professor removido com sucesso');
+      fetchData();
+    } catch {
+      showToast('Erro ao remover professor', 'error');
+    }
+  };
+
+  const teachers = usersList.filter(u => u.role === 'teacher');
+
+  return (
+    <div>
+      <h2>Gerenciamento de Professores</h2>
+
+      <div className="card">
+        <div className="card-header">Adicionar Professor</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="Nome do Professor" />
+          <input value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" />
+          <input value={password} onChange={e => setPassword(e.target.value)} placeholder="Senha" type="password" />
+          <input value={matric} onChange={e => setMatric(e.target.value)} placeholder="Matrícula do professor (opcional)" />
+          <select value={selectedCourse} onChange={e => setSelectedCourse(e.target.value)}>
+            <option value="">Selecione o curso</option>
+            {availableCourses.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <button className="primary" onClick={addTeacher}>Adicionar Professor</button>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-header">Professores Cadastrados</div>
+        <table>
+          <thead>
+            <tr><th>Nome</th><th>Email</th><th>Curso</th><th>Ações</th></tr>
+          </thead>
+          <tbody>
+            {teachers.map(t => (
+              <tr key={t.email}>
+                <td>{t.name}</td>
+                <td>{t.email}</td>
+                <td>{t.course || '-'}</td>
+                <td>
+                  <button onClick={() => removeTeacher(t.email)} style={{ background: 'none', border: 'none', color: 'red', cursor: 'pointer', fontWeight: 600 }}>Remover</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+
+function UsersManagement() {
+  const {
+    role, usersList = [], courses = [],
+    showToast, fetchData, getHeaders
+  } = useContext(AppContext);
+
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [selectedCourse, setSelectedCourse] = useState('');
+
+  if (role !== 'rector') {
+    return <div><h2>Acesso não autorizado</h2></div>;
+  }
+
+  const addCoordinator = async () => {
+    if (!name.trim() || !email.trim() || !password || !selectedCourse) {
+      showToast('Preencha todos os campos.', 'error');
+      return;
+    }
+
+    if (password.length < 8) {
+      showToast('A senha deve ter pelo menos 8 caracteres.', 'error');
+      return;
+    }
+
+    try {
+      const res = await apiFetch(`${API_URL}/users`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({
+          name: name.trim(),
+          email: email.trim(),
+          password,
+          role: 'coordinator',
+          course: selectedCourse
+        })
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao cadastrar coordenador.');
+      }
+
+      showToast('Coordenador cadastrado com sucesso!');
+      setName('');
+      setEmail('');
+      setPassword('');
+      setSelectedCourse('');
+      await fetchData();
+    } catch (err) {
+      showToast(err.message || 'Erro ao cadastrar coordenador.', 'error');
+    }
+  };
+
+  const removeCoordinator = async (coordinatorEmail) => {
+    if (!confirm(`Remover o coordenador ${coordinatorEmail}?`)) return;
+
+    try {
+      const res = await apiFetch(
+        `${API_URL}/users/${encodeURIComponent(coordinatorEmail)}`,
+        {
+          method: 'DELETE',
+          headers: getHeaders()
+        }
+      );
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao remover coordenador.');
+      }
+
+      showToast('Coordenador removido com sucesso!');
+      await fetchData();
+    } catch (err) {
+      showToast(err.message || 'Erro ao remover coordenador.', 'error');
+    }
+  };
+
+  const coordinators = usersList.filter(u => u.role === 'coordinator');
+
+  return (
+    <div>
+      <h2>Gerenciamento de Coordenadores</h2>
+
+      <div className="card">
+        <div className="card-header">Cadastrar Coordenador</div>
+
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr',
+          gap: '8px'
+        }}>
+          <input
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder="Nome do coordenador"
+          />
+
+          <input
+            type="email"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            placeholder="E-mail"
+          />
+
+          <input
+            type="password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            placeholder="Senha (mínimo 8 caracteres)"
+          />
+
+          <select
+            value={selectedCourse}
+            onChange={e => setSelectedCourse(e.target.value)}
+          >
+            <option value="">Selecione o curso</option>
+            {courses.map(course => (
+              <option key={course} value={course}>{course}</option>
+            ))}
+          </select>
+
+          <button
+            type="button"
+            className="primary"
+            onClick={addCoordinator}
+          >
+            Cadastrar Coordenador
+          </button>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-header">Coordenadores Cadastrados</div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Nome</th>
+              <th>E-mail</th>
+              <th>Curso</th>
+              <th>Ações</th>
+            </tr>
+          </thead>
+
+          <tbody>
+            {coordinators.map(coordinator => (
+              <tr key={coordinator.email}>
+                <td>{coordinator.name}</td>
+                <td>{coordinator.email}</td>
+                <td>{coordinator.course || '-'}</td>
+                <td>
+                  <button
+                    type="button"
+                    onClick={() => removeCoordinator(coordinator.email)}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'red',
+                      cursor: 'pointer',
+                      fontWeight: 600
+                    }}
+                  >
+                    Remover
+                  </button>
+                </td>
+              </tr>
+            ))}
+
+            {coordinators.length === 0 && (
+              <tr>
+                <td colSpan="4">Nenhum coordenador cadastrado.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function CourseManagement() {
+  const { user, courses = [], fetchData, showToast, role, getHeaders } = useContext(AppContext);
+  const availableCourses = role === 'coordinator' ? courses.filter(c => c === user?.course) : courses;
+  const [turmas, setTurmas] = useState([]);
+  const [newCourse, setNewCourse] = useState('');
+  const [newTurma, setNewTurma] = useState('');
+  const [selectedCourse, setSelectedCourse] = useState('');
+
+  useEffect(() => {
+    fetchTurmas();
+  }, []);
+
+  const fetchTurmas = async () => {
+    const res = await apiFetch(`${API_URL}/turmas`);
+    if (res.ok) setTurmas(await res.json());
+  };
+
+  const addCourse = async () => {
+    if (!newCourse) return;
+    await apiFetch(`${API_URL}/courses`, {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify({ name: newCourse })
+    });
+    setNewCourse(''); fetchData(); showToast('Curso adicionado');
+  };
+
+  const removeCourse = async (courseName) => {
+    if (!confirm(`Remover curso ${courseName}?`)) return;
+    try {
+      const res = await apiFetch(`${API_URL}/courses/${encodeURIComponent(courseName)}`, {
+        method: 'DELETE',
+        headers: getHeaders()
+      });
+      if (!res.ok) throw new Error();
+      showToast('Curso removido com sucesso');
+      fetchData();
+      fetchTurmas();
+    } catch {
+      showToast('Erro ao remover curso', 'error');
+    }
+  };
+
+  const addTurma = async () => {
+    if (!newTurma || !selectedCourse) { showToast('Selecione o curso e nome da turma', 'error'); return; }
+    await apiFetch(`${API_URL}/turmas`, {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify({ name: newTurma, course: selectedCourse })
+    });
+    setNewTurma(''); fetchTurmas(); showToast('Turma adicionada');
+  };
+
+  const removeTurma = async (turma, curso) => {
+    if (!confirm(`Remover turma ${turma} do curso ${curso}?`)) return;
+    await apiFetch(`${API_URL}/turmas?name=${turma}&course=${curso}`, {
+      method: 'DELETE',
+      headers: getHeaders()
+    });
+    fetchTurmas(); showToast('Turma removida');
+  };
+
+  return (
+    <div>
+      <h2>Gerenciamento de Cursos e Turmas</h2>
+
+      {role === 'rector' && (
+        <>
+          <div className="card">
+            <div className="card-header">Adicionar Curso</div>
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+              <input value={newCourse} onChange={e => setNewCourse(e.target.value)} placeholder="Nome do Curso" />
+              <button className="primary" onClick={addCourse}>Adicionar Curso</button>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-header">Cursos Cadastrados</div>
+            <table>
+              <thead><tr><th>Curso</th><th>Ações</th></tr></thead>
+              <tbody>
+                {courses.map(c => (
+                  <tr key={c}>
+                    <td>{c}</td>
+                    <td>
+                      <button onClick={() => removeCourse(c)} style={{ background: 'none', border: 'none', color: 'red', cursor: 'pointer', fontWeight: 600 }}>Remover</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      <div className="card">
+        <div className="card-header">Adicionar Turma</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '8px', marginBottom: '16px' }}>
+          <select value={selectedCourse} onChange={e => setSelectedCourse(e.target.value)}>
+            <option value="">Selecione o Curso</option>
+            {availableCourses.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <input value={newTurma} onChange={e => setNewTurma(e.target.value)} placeholder="Nome da Turma" />
+          <button className="primary" onClick={addTurma}>Adicionar Turma</button>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-header">Turmas Cadastradas</div>
+        <table>
+          <thead><tr><th>Curso</th><th>Turma</th><th>Ações</th></tr></thead>
+          <tbody>
+            {turmas.map(t => (
+              <tr key={`${t.course}-${t.name}`}>
+                <td>{t.course}</td>
+                <td>{t.name}</td>
+                <td>
+                  <button onClick={() => removeTurma(t.name, t.course)} style={{ background: 'none', border: 'none', color: 'red', cursor: 'pointer', fontWeight: 600 }}>Remover</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function Ata() {
+  const { votes = [], results = [], candidates = [], electionEndedAt } = useContext(AppContext);
+  const [profNome, setProfNome] = useState('');
+  const [profMatric, setProfMatric] = useState('');
+  const [ataTurmaInput, setAtaTurmaInput] = useState('A');
+  const [ataCursoInput, setAtaCursoInput] = useState('Engenharia');
+  const ataRef = useRef(null);
+
+  const exportPDF = () => {
+    if (typeof html2pdf !== 'function') {
+      console.error('html2pdf não está carregado');
+      return;
+    }
+    const element = ataRef.current;
+    const opt = {
+      margin: 10,
+      filename: `Ata_Eleicao_${ataCursoInput}_Turma_${ataTurmaInput}.pdf`,
+      image: { type: 'jpeg', quality: 0.98 },
+      html2canvas: { scale: 2 },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+    };
+    html2pdf().set(opt).from(element).save();
+  };
+
+  const scopedResults = results.filter(v => v.voterClass === ataTurmaInput && v.course === ataCursoInput);
+  const scopedParticipation = votes.filter(v => v.voterClass === ataTurmaInput && v.course === ataCursoInput);
+  const { leader: leaderVotes, viceLeader: viceVotes } = tallyResults(scopedResults);
+
+  let leaderWinner = null;
+  let maxL = 0;
+  Object.keys(leaderVotes).forEach(id => {
+    if (leaderVotes[id] > maxL) { maxL = leaderVotes[id]; leaderWinner = candidates.find(c => c.id === id); }
+  });
+
+  let viceWinner = null;
+  let maxV = 0;
+  Object.keys(viceVotes).forEach(id => {
+    if (viceVotes[id] > maxV) { maxV = viceVotes[id]; viceWinner = candidates.find(c => c.id === id); }
+  });
+
+  const dataEleicao = electionEndedAt ? new Date(electionEndedAt) : null;
+  const dataEleicaoValida = dataEleicao && !Number.isNaN(dataEleicao.getTime());
+  const dataEleicaoTexto = dataEleicaoValida
+    ? dataEleicao.toLocaleDateString('pt-BR')
+    : 'Data não registrada';
+
+  return (
+    <div>
+      <h2>Ata Oficial de Eleição</h2>
+      <div className="card">
+        <div className="card-header">Configurações da Ata</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
+          <div><label>Professor (Nome)</label><input value={profNome} onChange={e => setProfNome(e.target.value)} placeholder="Nome do Professor" /></div>
+          <div><label>Professor (Matrícula)</label><input value={profMatric} onChange={e => setProfMatric(e.target.value)} placeholder="Matrícula" /></div>
+          <div><label>Turma</label><input value={ataTurmaInput} onChange={e => setAtaTurmaInput(e.target.value)} placeholder="Ex: A" /></div>
+          <div><label>Curso</label><input value={ataCursoInput} onChange={e => setAtaCursoInput(e.target.value)} placeholder="Ex: Engenharia" /></div>
+        </div>
+      </div>
+      <div className="card" style={{ marginBottom: '24px', display: 'flex', gap: '10px' }}>
+        <button className="primary" onClick={() => window.print()} style={{ flex: 1 }}>🖨️ Imprimir Ata</button>
+        <button className="primary" onClick={exportPDF} style={{ flex: 1, background: 'var(--success)' }}>📥 Salvar em PDF</button>
+      </div>
+
+      <div ref={ataRef}>
+        {/* PÁGINA 1 */}
+        <div className="card" style={{ background: 'white', color: 'black', padding: '48px', maxWidth: '800px', margin: '0 auto', fontFamily: 'Times New Roman, serif', marginBottom: '40px' }}>
+          {/* Header institucional */}
+          <div style={{ border: '1px solid black', marginBottom: '24px', fontSize: '12px' }}>
+            <div style={{ display: 'flex', borderBottom: '1px solid black' }}>
+              <div style={{ flex: 1, padding: '6px', borderRight: '1px solid black' }}><strong>APROVADO POR:</strong> SUPERINTENDENTE ACADÊMICA</div>
+              <div style={{ width: '150px', padding: '6px', borderRight: '1px solid black' }}><strong>DATA:</strong> {dataEleicaoTexto}</div>
+              <div style={{ width: '100px', padding: '6px', borderRight: '1px solid black' }}><strong>VERSÃO:</strong> 05</div>
+              <div style={{ width: '120px', padding: '6px' }}><strong>CÓDIGO:</strong> CCG-FOR-17</div>
+            </div>
+            <div style={{ textAlign: 'center', padding: '12px', fontSize: '16px', fontWeight: 'bold', textTransform: 'uppercase', background: '#f0f0f0' }}>
+              ATA ELEIÇÃO DE LÍDERES DE TURMA
+            </div>
+          </div>
+
+          <div style={{ lineHeight: '1.8', fontSize: '14px', textAlign: 'left' }}>
+            <p style={{ marginBottom: '20px', textAlign: 'justify' }}>
+              Na data <strong>{dataEleicaoTexto}</strong>, os alunos da turma <strong>{ataTurmaInput}</strong> do curso de <strong>{ataCursoInput}</strong> da Unidade UNAMA ALCINDO CACELA elegeram, como seu legítimo Líder de Turma, o(a) aluno(a):
+            </p>
+
+            <div style={{ margin: '20px 0', padding: '16px', background: '#fdfdfd', border: '1px solid #333', borderRadius: '4px' }}>
+              <div style={{ marginBottom: '8px' }}>Nome completo: <strong>{leaderWinner ? leaderWinner.name : '________________________________________________'}</strong></div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <div>Matrícula: <strong>{leaderWinner ? leaderWinner.matric : '________________'}</strong></div>
+                <div>Telefone: <strong>{leaderWinner ? leaderWinner.phone || '____________________' : '____________________'}</strong></div>
+              </div>
+              <div>E-mail: <strong>{leaderWinner ? leaderWinner.email : '________________________________________________'}</strong></div>
+            </div>
+
+            <p style={{ margin: '20px 0' }}>E Vice-líder, o(a) aluno(a):</p>
+
+            <div style={{ margin: '20px 0', padding: '16px', background: '#fdfdfd', border: '1px solid #333', borderRadius: '4px' }}>
+              <div style={{ marginBottom: '8px' }}>Nome completo: <strong>{viceWinner ? viceWinner.name : '________________________________________________'}</strong></div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <div>Matrícula: <strong>{viceWinner ? viceWinner.matric : '________________'}</strong></div>
+                <div>Telefone: <strong>{viceWinner ? viceWinner.phone || '____________________' : '____________________'}</strong></div>
+              </div>
+              <div>E-mail: <strong>{viceWinner ? viceWinner.email : '________________________________________________'}</strong></div>
+            </div>
+
+            <p style={{ margin: '20px 0', textAlign: 'justify' }}>O mandato do Líder e do Vice-líder se estende da presente data até o final do período letivo corrente.</p>
+            <p style={{ margin: '20px 0' }}>O processo de eleição foi testemunhado pelo professor:</p>
+
+            <div style={{ margin: '20px 0' }}>
+              <div style={{ marginBottom: '8px' }}>Nome: <strong>{profNome || '________________________________________________'}</strong> &nbsp;&nbsp;&nbsp;&nbsp; Matrícula: <strong>{profMatric || '____________________'}</strong></div>
+            </div>
+
+            <div style={{ marginTop: '40px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              <div style={{ borderTop: '1px solid black', width: '60%', paddingTop: '4px' }}>Assinatura do professor</div>
+              <div style={{ borderTop: '1px solid black', width: '60%', paddingTop: '4px' }}>Assinatura do líder</div>
+              <div style={{ borderTop: '1px solid black', width: '60%', paddingTop: '4px' }}>Assinatura do vice-líder</div>
+            </div>
+
+            <div style={{ marginTop: '30px' }}>
+              <div>E-mail da Turma: ________________________________________________________________</div>
+            </div>
+          </div>
+        </div>
+
+        {/* PÁGINA 2 - LISTA DE PRESENÇA */}
+        <div className="card" style={{ background: 'white', color: 'black', padding: '48px', maxWidth: '800px', margin: '0 auto', fontFamily: 'Times New Roman, serif', pageBreakBefore: 'always' }}>
+          <div style={{ border: '1px solid black', marginBottom: '24px', fontSize: '12px' }}>
+            <div style={{ display: 'flex', borderBottom: '1px solid black' }}>
+              <div style={{ flex: 1, padding: '6px', borderRight: '1px solid black' }}><strong>APROVADO POR:</strong> SUPERINTENDENTE ACADÊMICA</div>
+              <div style={{ width: '150px', padding: '6px', borderRight: '1px solid black' }}><strong>DATA:</strong> {dataEleicaoTexto}</div>
+              <div style={{ width: '100px', padding: '6px', borderRight: '1px solid black' }}><strong>VERSÃO:</strong> 05</div>
+              <div style={{ width: '120px', padding: '6px' }}><strong>CÓDIGO:</strong> CCG-FOR-17</div>
+            </div>
+            <div style={{ textAlign: 'center', padding: '12px', fontSize: '16px', fontWeight: 'bold', textTransform: 'uppercase', background: '#f0f0f0' }}>
+              ATA ELEIÇÃO DE LÍDERES DE TURMA
+            </div>
+          </div>
+
+          <div style={{ marginBottom: '16px', fontSize: '14px' }}>
+            <strong>Total de alunos presentes:</strong> ___________________________________ ({scopedParticipation.length} registrados)
+          </div>
+
+          <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: '16px' }}>
+            <thead>
+              <tr>
+                <th style={{ border: '1px solid black', padding: '10px', width: '20%', textAlign: 'center', background: '#f9f9f9' }}>MATRÍCULA</th>
+                <th style={{ border: '1px solid black', padding: '10px', width: '40%', textAlign: 'center', background: '#f9f9f9' }}>NOME</th>
+                <th style={{ border: '1px solid black', padding: '10px', width: '40%', textAlign: 'center', background: '#f9f9f9' }}>ASSINATURA</th>
+              </tr>
+            </thead>
+            <tbody>
+              {scopedParticipation.map(v => (
+                <tr key={v.id}>
+                  <td style={{ border: '1px solid black', padding: '10px', textAlign: 'center' }}>{v.voterMatric}</td>
+                  <td style={{ border: '1px solid black', padding: '10px' }}>{v.voterName}</td>
+                  <td style={{ border: '1px solid black', padding: '10px' }}>&nbsp;</td>
+                </tr>
+              ))}
+              {[...Array(Math.max(0, 20 - scopedParticipation.length))].map((_, i) => (
+                <tr key={i}>
+                  <td style={{ border: '1px solid black', padding: '12px', height: '36px' }}>&nbsp;</td>
+                  <td style={{ border: '1px solid black', padding: '12px', height: '36px' }}>&nbsp;</td>
+                  <td style={{ border: '1px solid black', padding: '12px', height: '36px' }}>&nbsp;</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CandidateModal() {
+  const { user, role, setShowCandidateModal, showToast, courses = [], fetchData, getHeaders } = useContext(AppContext);
+  const availableCourses = role === 'coordinator' ? courses.filter(c => c === user?.course) : courses;
+  const [name, setName] = useState('');
+  const [matric, setMatric] = useState('');
+  const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
+  const [cClass, setCClass] = useState('');
+  const [selectedCourse, setSelectedCourse] = useState('');
+  const [position, setPosition] = useState('leader');
+  const [availableTurmas, setAvailableTurmas] = useState([]);
+
+  useEffect(() => {
+    if (selectedCourse) {
+      apiFetch(`${API_URL}/turmas?course=${selectedCourse}`)
+        .then(res => res.json())
+        .then(data => setAvailableTurmas(data))
+        .catch(() => setAvailableTurmas([]));
+    } else {
+      setAvailableTurmas([]);
+      setCClass('');
+    }
+  }, [selectedCourse]);
+
+  const handleAdd = async () => {
+    if (!name || !matric || !selectedCourse || !cClass) {
+      showToast('Preencha os campos obrigatórios', 'error');
+      return;
+    }
+    const newCand = { id: 'cand_' + Date.now(), name, matric, phone, email, class: cClass, course: selectedCourse, position };
+    try {
+      const response = await apiFetch(`${API_URL}/candidates`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify(newCand)
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(result.error || 'Não foi possível cadastrar o candidato.');
+      }
+      setShowCandidateModal(false);
+      showToast('Candidato adicionado!');
+      await fetchData();
+    } catch (error) {
+      showToast(error.message || 'Erro ao cadastrar candidato.', 'error');
+    }
+  };
+
+  return (
+    <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
+      <div className="card" style={{ width: '400px', background: 'var(--bg-primary)' }}>
+        <div className="card-header">Adicionar Candidato</div>
+        <div className="form-group"><label>Nome</label><input value={name} onChange={e => setName(e.target.value)} /></div>
+        <div className="form-group"><label>Matrícula</label><input value={matric} onChange={e => setMatric(e.target.value)} /></div>
+        <div className="form-group"><label>Telefone</label><input value={phone} onChange={e => setPhone(e.target.value)} /></div>
+        <div className="form-group"><label>E-mail</label><input value={email} onChange={e => setEmail(e.target.value)} /></div>
+        <div className="form-group"><label>Curso</label>
+          <select value={selectedCourse} onChange={e => setSelectedCourse(e.target.value)}>
+            <option value="">Selecione o Curso</option>
+            {availableCourses.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div className="form-group"><label>Turma</label>
+          <select value={cClass} onChange={e => setCClass(e.target.value)} disabled={!selectedCourse}>
+            <option value="">Selecione a Turma</option>
+            {availableTurmas.map(t => <option key={t.name} value={t.name}>Turma {t.name}</option>)}
+          </select>
+        </div>
+        <div className="form-group"><label>Cargo</label>
+          <select value={position} onChange={e => setPosition(e.target.value)}>
+            <option value="leader">Líder</option>
+            <option value="viceLeader">Vice-Líder</option>
+          </select>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+          <button onClick={() => setShowCandidateModal(false)}>Cancelar</button>
+          <button className="primary" onClick={handleAdd}>Adicionar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UserModal() { return null; }
+
+function QrModal() {
+  const { setShowQrModal } = useContext(AppContext);
+
+  useEffect(() => {
+    const container = document.getElementById('qrcodeContainer');
+    if (container && typeof QRCode !== 'undefined') {
+      container.innerHTML = '';
+      new QRCode(container, {
+        text: window.location.origin,
+        width: 180,
+        height: 180,
+        colorDark: '#000000',
+        colorLight: '#ffffff',
+        correctLevel: QRCode.CorrectLevel.H
+      });
+    }
+  }, []);
+
+  return (
+    <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
+      <div className="card" style={{ width: '380px', textAlign: 'center', background: 'var(--bg-primary)' }}>
+        <div className="card-header">📱 QR Code para Votação</div>
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '16px' }}>
+          <div id="qrcodeContainer" style={{ padding: '12px', background: 'white', borderRadius: '8px', display: 'inline-block' }}></div>
+        </div>
+        <button className="primary" onClick={() => setShowQrModal(false)}>Fechar</button>
+      </div>
+    </div>
+  );
+}

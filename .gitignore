@@ -1,0 +1,14 @@
+node_modules/
+.env
+.env.*
+!.env.example
+banco.env
+*.db
+*.sqlite
+*.log
+dist/
+votação-dist/
+.DS_Store
+*.dump
+coverage/
+test-results/

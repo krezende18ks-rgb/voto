@@ -1,0 +1,90 @@
+
+const fs = require('fs');
+const path = require('path');
+const db = require('./db');
+
+const migrations = [
+  {
+    version: '001',
+    name: 'separar_votos_e_participacao',
+    file: '001_separar_votos_e_participacao.sql',
+  },
+];
+
+async function main() {
+  const client = await db.connect();
+  let transactionStarted = false;
+
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        version TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    for (const migration of migrations) {
+      await client.query('BEGIN');
+      transactionStarted = true;
+
+      await client.query(
+        'SELECT pg_advisory_xact_lock($1)',
+        [20261121]
+      );
+
+      const existing = await client.query(
+        'SELECT version FROM schema_migrations WHERE version = $1',
+        [migration.version]
+      );
+
+      if (existing.rowCount > 0) {
+        await client.query('COMMIT');
+        transactionStarted = false;
+        console.log(`Migração ${migration.version} já aplicada. Pulando.`);
+        continue;
+      }
+
+      const migrationPath = path.join(
+        __dirname,
+        'migrations',
+        migration.file
+      );
+
+      if (!fs.existsSync(migrationPath)) {
+        throw new Error(`Arquivo não encontrado: ${migrationPath}`);
+      }
+
+      const sql = fs.readFileSync(migrationPath, 'utf8');
+
+      console.log(`Executando migração ${migration.version}...`);
+
+      await client.query(sql);
+
+      await client.query(
+        `INSERT INTO schema_migrations (version, name)
+         VALUES ($1, $2)`,
+        [migration.version, migration.name]
+      );
+
+      await client.query('COMMIT');
+      transactionStarted = false;
+
+      console.log(`Migração ${migration.version} aplicada com sucesso.`);
+    }
+
+    console.log('Migrações finalizadas.');
+  } catch (error) {
+    if (transactionStarted) {
+      await client.query('ROLLBACK');
+    }
+
+    console.error('Erro durante a migração:', error.message);
+    process.exitCode = 1;
+  } finally {
+    client.release();
+    await db.end();
+  }
+}
+
+main();
