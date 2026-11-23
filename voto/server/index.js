@@ -727,7 +727,38 @@ app.post(
     }
   }
 );
+app.get(
+  '/elections/:id/my-participation',
+  checkRole(['voter']),
+  async (req, res) => {
+    try {
+      const { rows } = await db.query(
+        `SELECT EXISTS (
+          SELECT 1
+          FROM election_participation ep
+          INNER JOIN elections e ON e.id = ep.election_id
+          WHERE ep.election_id = $1
+            AND ep.voter_id = $2
+            AND e.class = $3
+            AND e.course = $4
+        ) AS voted`,
+        [
+          req.params.id,
+          Number(req.auth.sub),
+          req.auth.class,
+          req.auth.course
+        ]
+      );
 
+      res.json(rows[0]);
+    } catch (error) {
+      console.error('Erro ao consultar participação na eleição:', error.message);
+      res.status(500).json({
+        error: 'Erro ao consultar situação eleitoral.'
+      });
+    }
+  }
+);
 app.post(
   '/elections/:id/votes',
   rateLimiter(60000, 20),

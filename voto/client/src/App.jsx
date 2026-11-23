@@ -104,9 +104,21 @@ export default function App() {
      
         } 
       if (electionsRes && electionsRes.ok) {
-          const electionData = await electionsRes.json();
-          setElections(Array.isArray(electionData) ? electionData : []);
-        }
+  const electionData = await electionsRes.json();
+  const validElections = Array.isArray(electionData) ? electionData : [];
+
+  setElections(validElections);
+
+  const currentElection = validElections.find(
+    election => election.id === selectedElection?.id
+  );
+
+  if (isVoter) {
+    setSelectedElection(currentElection || validElections[0] || null);
+  } else if (!currentElection) {
+    setSelectedElection(validElections[0] || null);
+  }
+}
 
 
 
@@ -182,6 +194,7 @@ elections, selectedElection, setSelectedElection,
           <Sidebar />
           <main id="main-content" className="content-area" tabIndex={-1}>
             {view === 'dashboard' && <Dashboard />}
+            {view === 'elections' && <Elections />}
             {view === 'voting' && <Voting />}
             {view === 'candidates' && <Candidates />}
             {view === 'monitoring' && <Monitoring />}
@@ -316,6 +329,7 @@ function Sidebar() {
     teacher: [{ id: 'dashboard', label: '📊 Dashboard' }, { id: 'candidates', label: '🎯 Candidatos' }],
     coordinator: [
       { id: 'dashboard', label: '📊 Dashboard' },
+      { id: 'elections', label: '🗳️ Eleições' },
       { id: 'candidates', label: '🎯 Candidatos' },
       { id: 'students', label: '👨‍🎓 Alunos' },
       { id: 'teachers', label: '👨‍🏫 Professores' },
@@ -325,6 +339,7 @@ function Sidebar() {
     ],
     rector: [
       { id: 'dashboard', label: '📊 Dashboard' },
+      { id: 'elections', label: '🗳️ Eleições' },
       { id: 'monitoring', label: '👁️ Monitoramento' },
       { id: 'students', label: '👨‍🎓 Alunos' },
       { id: 'teachers', label: '👨‍🏫 Professores' },
@@ -342,6 +357,226 @@ function Sidebar() {
         </button>
       ))}
     </nav>
+  );
+}
+
+function Elections() {
+  const {
+    user,
+    role,
+    elections = [],
+    selectedElection,
+    setSelectedElection,
+    courses = [],
+    fetchData,
+    getHeaders,
+    showToast
+  } = useContext(AppContext);
+
+  const [electionClass, setElectionClass] = useState('');
+  const [course, setCourse] = useState(user?.course || '');
+  const [period, setPeriod] = useState('2026.2');
+  const [loading, setLoading] = useState(false);
+
+  const createElection = async (e) => {
+    e.preventDefault();
+
+    if (!electionClass.trim() || !course.trim() || !period.trim()) {
+      showToast('Preencha todos os campos.', 'error');
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const response = await apiFetch(`${API_URL}/elections`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({
+          class: electionClass.trim(),
+          course: course.trim(),
+          period: period.trim()
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Não foi possível criar a eleição.');
+      }
+
+      setSelectedElection(data.election);
+      await fetchData();
+      setElectionClass('');
+      showToast('Eleição criada com sucesso!');
+    } catch (error) {
+      showToast(error.message, 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const changeElectionStatus = async (election, action) => {
+    const description = action === 'start' ? 'iniciar' : 'encerrar';
+
+    if (!confirm(`Deseja realmente ${description} esta eleição?`)) {
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const response = await apiFetch(
+        `${API_URL}/elections/${encodeURIComponent(election.id)}/${action}`,
+        {
+          method: 'POST',
+          headers: getHeaders()
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Não foi possível atualizar a eleição.');
+      }
+
+      setSelectedElection(data.election);
+      await fetchData();
+      showToast(data.message || 'Eleição atualizada!');
+    } catch (error) {
+      showToast(error.message, 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const statusLabel = {
+    draft: 'Não iniciada',
+    open: 'Em andamento',
+    closed: 'Encerrada'
+  };
+
+  return (
+    <section>
+      <h2>🗳️ Gerenciamento de Eleições</h2>
+      <p>Crie e acompanhe eleições independentes por turma e curso.</p>
+
+      <div className="card" style={{ padding: '20px', marginBottom: '24px' }}>
+        <h3>Nova eleição</h3>
+
+        <form onSubmit={createElection}>
+          <div className="form-group">
+            <label htmlFor="election-class">Turma</label>
+            <input
+              id="election-class"
+              value={electionClass}
+              onChange={e => setElectionClass(e.target.value)}
+              placeholder="Ex.: 3º período - Turma A"
+              required
+            />
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="election-course">Curso</label>
+
+            {role === 'coordinator' ? (
+              <input
+                id="election-course"
+                value={user?.course || ''}
+                disabled
+              />
+            ) : (
+              <select
+                id="election-course"
+                value={course}
+                onChange={e => setCourse(e.target.value)}
+                required
+              >
+                <option value="">Selecione o curso</option>
+                {courses.map(item => (
+                  <option key={item} value={item}>{item}</option>
+                ))}
+              </select>
+            )}
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="election-period">Período</label>
+            <input
+              id="election-period"
+              value={period}
+              onChange={e => setPeriod(e.target.value)}
+              placeholder="Ex.: 2026.2"
+              required
+            />
+          </div>
+
+          <button type="submit" className="primary" disabled={loading}>
+            {loading ? 'Aguarde...' : 'Criar eleição'}
+          </button>
+        </form>
+      </div>
+
+      <div className="card" style={{ padding: '20px' }}>
+        <h3>Eleição cadastradas</h3>
+
+        {elections.length === 0 ? (
+          <p>Nenhuma eleição cadastrada.</p>
+        ) : (
+          elections.map(election => (
+            <div
+              key={election.id}
+              style={{
+                border: '1px solid var(--border)',
+                borderRadius: '8px',
+                padding: '16px',
+                marginBottom: '12px'
+              }}
+            >
+              <h4>{election.class} — {election.course}</h4>
+              <p>Período: {election.period}</p>
+              <p>
+                Situação: <strong>
+                  {statusLabel[election.status] || election.status}
+                </strong>
+              </p>
+
+              <button
+                type="button"
+                onClick={() => setSelectedElection(election)}
+                disabled={selectedElection?.id === election.id}
+              >
+                {selectedElection?.id === election.id
+                  ? 'Eleição selecionada'
+                  : 'Selecionar eleição'}
+              </button>
+
+              {election.status === 'draft' && (
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={loading}
+                  onClick={() => changeElectionStatus(election, 'start')}
+                >
+                  Iniciar
+                </button>
+              )}
+
+              {election.status === 'open' && (
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={loading}
+                  onClick={() => changeElectionStatus(election, 'end')}
+                >
+                  Encerrar
+                </button>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -480,45 +715,156 @@ function Dashboard() {
   );
 }
 
+
 function Voting() {
-  const { user, candidates = [], votes = [], hasVoted, votingStarted, votingEnded, fetchData, showToast, getHeaders } = useContext(AppContext);
-  const [name, setName] = useState(user?.name || '');
-  const [matric, setMatric] = useState(user?.matric || '');
-  const [vClass, setVClass] = useState(user?.class || '');
+  const {
+    user,
+    selectedElection,
+    fetchData,
+    showToast,
+    getHeaders
+  } = useContext(AppContext);
+
+  const [candidates, setCandidates] = useState([]);
+  const [hasVoted, setHasVoted] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [selectedLeader, setSelectedLeader] = useState(null);
   const [selectedViceLeader, setSelectedViceLeader] = useState(null);
 
   useEffect(() => {
-    if (user) {
-      setName(user.name || '');
-      setMatric(user.matric || '');
-      setVClass(user.class || '');
+    let cancelled = false;
 
+    const loadElectionData = async () => {
+      if (!selectedElection?.id) {
+        setCandidates([]);
+        setHasVoted(false);
+        return;
+      }
+
+      setLoading(true);
+      setCandidates([]);
+      setHasVoted(false);
+      setSelectedLeader(null);
+      setSelectedViceLeader(null);
+
+      try {
+        const electionId = encodeURIComponent(selectedElection.id);
+
+        const [candidatesRes, participationRes] = await Promise.all([
+          apiFetch(`${API_URL}/elections/${electionId}/candidates`),
+          apiFetch(`${API_URL}/elections/${electionId}/my-participation`)
+        ]);
+
+        if (!candidatesRes.ok) {
+          throw new Error('Não foi possível carregar os candidatos.');
+        }
+
+        if (!participationRes.ok) {
+          throw new Error('Não foi possível consultar sua participação.');
+        }
+
+        const candidateData = await candidatesRes.json();
+        const participationData = await participationRes.json();
+
+        if (!cancelled) {
+          setCandidates(Array.isArray(candidateData) ? candidateData : []);
+          setHasVoted(Boolean(participationData.voted));
+        }
+      } catch (error) {
+        if (!cancelled) {
+          showToast(error.message || 'Erro ao carregar a eleição.', 'error');
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    loadElectionData();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedElection?.id]);
+
+  const submitVote = async () => {
+    if (!selectedElection?.id || !selectedLeader || !selectedViceLeader) {
+      showToast('Selecione um candidato para cada cargo.', 'error');
+      return;
     }
-  }, [user]);
 
+    if (selectedLeader === selectedViceLeader) {
+      showToast('Selecione candidatos diferentes.', 'error');
+      return;
+    }
 
-  if (votingEnded) {
-    return (
-      <div>
-        <h2>Votação</h2>
-        <div className="card" style={{ textAlign: 'center', padding: '40px' }}>
-          <div style={{ fontSize: '48px', marginBottom: '16px' }}>🔴</div>
-          <h3>Votação Encerrada</h3>
-          <p style={{ color: 'var(--fg-secondary)', marginTop: '8px' }}>A votação para esta turma já foi encerrada.</p>
-        </div>
-      </div>
-    );
-  }
+    setLoading(true);
 
-  if (!votingStarted) {
+    try {
+      const electionId = encodeURIComponent(selectedElection.id);
+
+      const res = await apiFetch(
+        `${API_URL}/elections/${electionId}/votes`,
+        {
+          method: 'POST',
+          headers: getHeaders(),
+          body: JSON.stringify({
+            leader: selectedLeader,
+            viceLeader: selectedViceLeader
+          })
+        }
+      );
+
+      const result = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(result.error || 'Erro ao registrar voto.');
+      }
+
+      setHasVoted(true);
+      setSelectedLeader(null);
+      setSelectedViceLeader(null);
+
+      showToast('Voto registrado com sucesso!');
+      await fetchData();
+    } catch (error) {
+      showToast(error.message || 'Erro ao registrar voto.', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!selectedElection) {
     return (
       <div>
         <h2>Votação</h2>
         <div className="card" role="status" style={{ textAlign: 'center', padding: '40px' }}>
           <div style={{ fontSize: '48px', marginBottom: '16px' }}>🕒</div>
-          <h3>Votação ainda não iniciada</h3>
-          <p style={{ color: 'var(--fg-secondary)', marginTop: '8px' }}>Aguarde a abertura oficial da eleição.</p>
+          <h3>Nenhuma eleição disponível</h3>
+          <p>Aguarde a abertura de uma eleição para sua turma e curso.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (selectedElection.status !== 'open') {
+    return (
+      <div>
+        <h2>Votação</h2>
+        <div className="card" role="status" style={{ textAlign: 'center', padding: '40px' }}>
+          <div style={{ fontSize: '48px', marginBottom: '16px' }}>🔴</div>
+          <h3>Votação não está aberta</h3>
+          <p>Esta eleição ainda não foi iniciada ou já foi encerrada.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div>
+        <h2>Votação</h2>
+        <div className="card" role="status" style={{ textAlign: 'center', padding: '40px' }}>
+          Carregando dados da eleição...
         </div>
       </div>
     );
@@ -530,90 +876,132 @@ function Voting() {
         <h2>Votação</h2>
         <div className="card" style={{ textAlign: 'center', padding: '40px' }}>
           <div style={{ fontSize: '48px', marginBottom: '16px' }}>✅</div>
-          <h3>Voto Registrado com Sucesso!</h3>
-          <p style={{ color: 'var(--fg-secondary)', marginTop: '8px' }}>Seu voto já foi computado e registrado de forma segura na blockchain para a Turma {vClass}.</p>
+          <h3>Voto registrado com sucesso!</h3>
+          <p>Seu voto foi registrado para esta eleição.</p>
+          <p>
+            {selectedElection.course} · Turma {selectedElection.class}
+          </p>
         </div>
       </div>
     );
   }
 
-  const submitVote = async () => {
-    if (!name || !matric || !vClass || !selectedLeader || !selectedViceLeader) {
-      showToast('Preencha todos os campos e selecione os candidatos', 'error');
-      return;
-    }
-    try {
-      const res = await apiFetch(`${API_URL}/votes`, {
-        method: 'POST',
-        headers: getHeaders(),
-        body: JSON.stringify({ leader: selectedLeader, viceLeader: selectedViceLeader })
-      });
-      const result = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(result.error || 'Erro ao registrar voto');
-      }
-      showToast('Voto registrado com sucesso!');
-      setSelectedLeader(null); setSelectedViceLeader(null);
-      await fetchData();
-    } catch (err) {
-      showToast(err.message || 'Erro ao registrar voto', 'error');
-    }
-  };
+  const leaders = candidates.filter(c => c.position === 'leader');
+  const viceLeaders = candidates.filter(c => c.position === 'viceLeader');
 
-  // Novos registros possuem class=turma e course=curso.
-  // Registros antigos podem ter class=curso e course vazio; mantemos compatibilidade.
-  const classCandidates = candidates.filter((candidate) =>
-    isCandidateEligible(candidate, { class: vClass, course: user?.course })
-  );
-  const leaders = classCandidates.filter(c => c.position === 'leader');
-  const viceLeaders = classCandidates.filter(c => c.position === 'viceLeader');
+  const candidateButtonStyle = (selected) => ({
+    padding: '16px',
+    border: selected ? '2px solid var(--accent)' : '1px solid var(--border)',
+    borderRadius: '8px',
+    cursor: 'pointer',
+    background: selected ? 'var(--accent-light)' : 'var(--bg-primary)',
+    textAlign: 'left',
+    width: '100%',
+    color: 'var(--fg-primary)'
+  });
 
   return (
     <div>
       <h2>Votação</h2>
+
       <div className="card">
         <div className="card-header">Informações do Eleitor</div>
-        <div className="form-group"><label>Nome</label><input value={name} readOnly aria-readonly="true" /></div>
-        <div className="form-group"><label>Matrícula</label><input value={matric} readOnly aria-readonly="true" /></div>
-        <div className="form-group"><label>Curso</label><input value={user?.course || ''} readOnly aria-readonly="true" /></div>
-        <div className="form-group"><label htmlFor="voter-class">Turma</label><input id="voter-class" value={vClass} readOnly aria-readonly="true" /></div>
+        <div className="form-group">
+          <label>Nome</label>
+          <input value={user?.name || ''} readOnly />
+        </div>
+        <div className="form-group">
+          <label>Matrícula</label>
+          <input value={user?.matric || ''} readOnly />
+        </div>
+        <div className="form-group">
+          <label>Curso</label>
+          <input value={user?.course || ''} readOnly />
+        </div>
+        <div className="form-group">
+          <label>Turma</label>
+          <input value={user?.class || ''} readOnly />
+        </div>
       </div>
+
+      <div className="card">
+        <div className="card-header">
+          Eleição: {selectedElection.period}
+        </div>
+        <p>
+          {selectedElection.course} · Turma {selectedElection.class}
+        </p>
+      </div>
+
       <div className="card">
         <div className="card-header">Votação para Líder</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+          gap: '12px'
+        }}>
           {leaders.length === 0 ? (
-            <p style={{ color: 'var(--fg-secondary)' }}>Nenhum candidato a líder foi encontrado para sua turma/curso. Confira se o curso está preenchido no cadastro do aluno e se o candidato foi associado à turma correta.</p>
+            <p>Nenhum candidato a líder cadastrado nesta eleição.</p>
           ) : (
             leaders.map(c => (
-              <button type="button" key={c.id} aria-pressed={selectedLeader === c.id} onClick={() => setSelectedLeader(c.id)} style={{ padding: '16px', border: selectedLeader === c.id ? '2px solid var(--accent)' : '1px solid var(--border)', borderRadius: '8px', cursor: 'pointer', background: selectedLeader === c.id ? 'var(--accent-light)' : 'var(--bg-primary)', textAlign: 'left', width: '100%', color: 'var(--fg-primary)' }}>
+              <button
+                type="button"
+                key={c.id}
+                aria-pressed={selectedLeader === c.id}
+                onClick={() => setSelectedLeader(c.id)}
+                style={candidateButtonStyle(selectedLeader === c.id)}
+              >
                 <div style={{ fontWeight: 600 }}>{c.name}</div>
-                <div style={{ fontSize: '13px', color: 'var(--fg-secondary)' }}>Matrícula: {c.matric}</div>
-                <div style={{ fontSize: '13px', color: 'var(--fg-secondary)' }}>{c.course ? `Turma ${c.class} · ${c.course}` : `Curso ${c.class} (cadastro antigo)`}</div>
               </button>
             ))
           )}
         </div>
       </div>
+
       <div className="card">
         <div className="card-header">Votação para Vice-Líder</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+          gap: '12px'
+        }}>
           {viceLeaders.length === 0 ? (
-            <p style={{ color: 'var(--fg-secondary)' }}>Nenhum candidato a vice-líder foi encontrado para sua turma/curso. Confira se o curso está preenchido no cadastro do aluno e se o candidato foi associado à turma correta.</p>
+            <p>Nenhum candidato a vice-líder cadastrado nesta eleição.</p>
           ) : (
             viceLeaders.map(c => (
-              <button type="button" key={c.id} aria-pressed={selectedViceLeader === c.id} onClick={() => setSelectedViceLeader(c.id)} style={{ padding: '16px', border: selectedViceLeader === c.id ? '2px solid var(--accent)' : '1px solid var(--border)', borderRadius: '8px', cursor: 'pointer', background: selectedViceLeader === c.id ? 'var(--accent-light)' : 'var(--bg-primary)', textAlign: 'left', width: '100%', color: 'var(--fg-primary)' }}>
+              <button
+                type="button"
+                key={c.id}
+                aria-pressed={selectedViceLeader === c.id}
+                onClick={() => setSelectedViceLeader(c.id)}
+                style={candidateButtonStyle(selectedViceLeader === c.id)}
+              >
                 <div style={{ fontWeight: 600 }}>{c.name}</div>
-                <div style={{ fontSize: '13px', color: 'var(--fg-secondary)' }}>Matrícula: {c.matric}</div>
-                <div style={{ fontSize: '13px', color: 'var(--fg-secondary)' }}>{c.course ? `Turma ${c.class} · ${c.course}` : `Curso ${c.class} (cadastro antigo)`}</div>
               </button>
             ))
           )}
         </div>
       </div>
-      <button className="primary" onClick={submitVote} style={{ width: '100%', padding: '14px', fontSize: '16px', marginTop: '16px' }}>Confirmar Voto</button>
+
+      <button
+        className="primary"
+        onClick={submitVote}
+        disabled={loading || !leaders.length || !viceLeaders.length}
+        style={{
+          width: '100%',
+          padding: '14px',
+          fontSize: '16px',
+          marginTop: '16px'
+        }}
+      >
+        Confirmar Voto
+      </button>
     </div>
   );
 }
+
+
+  
 
 function Candidates() {
   const { candidates = [], setShowCandidateModal } = useContext(AppContext);
