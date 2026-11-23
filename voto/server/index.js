@@ -482,10 +482,10 @@ app.post(
 // Encerra uma eleição individual, preservando seu histórico.
 app.post(
   '/elections/:id/end',
-  checkRole(['coordinator', 'rector']),
+  checkRole(['teacher', 'coordinator', 'rector']),
   requireCourseScope,
   async (req, res) => {
-    const courseScope = req.auth.role === 'coordinator'
+    const courseScope = ['teacher', 'coordinator'].includes(req.auth.role)
       ? req.auth.course
       : null;
 
@@ -1194,7 +1194,7 @@ app.get(
       );
 
       const candidates = await db.query(
-        `SELECT id, name, position FROM election_candidates WHERE election_id = $1`,
+        `SELECT id, name, matric, phone, email, position FROM election_candidates WHERE election_id = $1`,
         [req.params.id]
       );
 

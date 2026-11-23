@@ -322,7 +322,7 @@ function Sidebar() {
   const { role, view, setView } = useContext(AppContext);
   const items = {
     voter: [{ id: 'voting', label: '✅ Votar' }],
-    teacher: [{ id: 'dashboard', label: '📊 Dashboard' }, { id: 'candidates', label: '🎯 Candidatos' }],
+    teacher: [{ id: 'dashboard', label: '📊 Dashboard' }, { id: 'elections', label: '🗳️ Eleições' }, { id: 'candidates', label: '🎯 Candidatos' }, { id: 'ata', label: '📄 Ata' }],
     coordinator: [
       { id: 'dashboard', label: '📊 Dashboard' },
       { id: 'elections', label: '🗳️ Eleições' },
@@ -366,7 +366,8 @@ function Elections() {
     courses = [],
     fetchData,
     getHeaders,
-    showToast
+    showToast,
+    setView
   } = useContext(AppContext);
 
   const [electionClass, setElectionClass] = useState('');
@@ -436,9 +437,10 @@ function Elections() {
         throw new Error(data.error || 'Não foi possível atualizar a eleição.');
       }
 
-      setSelectedElection(data.election);
       await fetchData();
+      setSelectedElection(data.election);
       showToast(data.message || 'Eleição atualizada!');
+      if (action === 'end') setView('ata');
     } catch (error) {
       showToast(error.message, 'error');
     } finally {
@@ -455,8 +457,9 @@ function Elections() {
   return (
     <section>
       <h2>🗳️ Gerenciamento de Eleições</h2>
-      <p>Crie e acompanhe eleições independentes por turma e curso.</p>
+      <p>{role === 'teacher' ? 'Acompanhe as eleições do seu curso e encerre as que estiverem em andamento.' : 'Crie e acompanhe eleições independentes por turma e curso.'}</p>
 
+      {role !== 'teacher' && (
       <div className="card" style={{ padding: '20px', marginBottom: '24px' }}>
         <h3>Nova eleição</h3>
 
@@ -512,6 +515,7 @@ function Elections() {
           </button>
         </form>
       </div>
+      )}
 
       <div className="card" style={{ padding: '20px' }}>
         <h3>Eleição cadastradas</h3>
@@ -547,7 +551,7 @@ function Elections() {
                   : 'Selecionar eleição'}
               </button>
 
-              {election.status === 'draft' && (
+              {role !== 'teacher' && election.status === 'draft' && (
                 <button
                   type="button"
                   className="primary"
@@ -568,6 +572,15 @@ function Elections() {
                   Encerrar
                 </button>
               )}
+
+              {election.status === 'closed' && (
+                <button
+                  type="button"
+                  onClick={() => { setSelectedElection(election); setView('ata'); }}
+                >
+                  📄 Gerar / visualizar ata
+                </button>
+              )}
             </div>
           ))
         )}
@@ -577,51 +590,7 @@ function Elections() {
 }
 
 function Dashboard() {
-  const { user, role, votes = [], candidates = [], courses = [], turmas = [], elections = [], selectedElection, setSelectedElection, votingStarted, setVotingStarted, votingEnded, setVotingEnded, showToast, setShowQrModal, setView, getHeaders } = useContext(AppContext);
-
-  const startVoting = async () => {
-    if (votingStarted) return;
-    if (confirm('Iniciar votação?')) {
-      try {
-        const res = await apiFetch(`${API_URL}/election-status`, {
-          method: 'POST',
-          headers: getHeaders(),
-          body: JSON.stringify({ key: 'started', value: true })
-        });
-        if (res.ok) {
-          setVotingStarted(true);
-          showToast('Votação iniciada!');
-        } else {
-          showToast('Erro ao iniciar votação', 'error');
-        }
-      } catch {
-        showToast('Erro de conexão', 'error');
-      }
-    }
-  };
-
-  const endVoting = async () => {
-    if (votingEnded) return;
-    if (confirm('Encerrar votação?')) {
-      try {
-        const res = await apiFetch(`${API_URL}/election-status`, {
-          method: 'POST',
-          headers: getHeaders(),
-          body: JSON.stringify({ key: 'ended', value: true })
-        });
-        if (res.ok) {
-          setVotingEnded(true);
-          await fetchData();
-          showToast('Votação encerrada!');
-          setView('ata');
-        } else {
-          showToast('Erro ao encerrar votação', 'error');
-        }
-      } catch {
-        showToast('Erro de conexão', 'error');
-      }
-    }
-  };
+  const { user, role, votes = [], turmas = [], selectedElection, showToast, setShowQrModal, setView } = useContext(AppContext);
 
   // Se for coordenador, filtra votos pelo curso do coordenador
   const filteredVotes = role === 'coordinator' && user?.course
@@ -653,12 +622,13 @@ function Dashboard() {
 
       {role === 'teacher' && (
         <div className="card" style={{ background: 'var(--accent-light)', border: '1px solid var(--accent)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div><strong>Controle da Votação</strong><p style={{ margin: '4px 0 0 0' }}>Encerre para gerar a ata.</p></div>
-            <button className="primary" onClick={endVoting} disabled={votingEnded} style={{ background: votingEnded ? 'var(--success)' : 'var(--critical)' }}>
-              {votingEnded ? '✅ Encerrada' : '🔴 Encerrar Votação'}
-            </button>
-          </div>
+          <strong>Eleição da turma</strong>
+          <p style={{ margin: '8px 0' }}>
+            {selectedElection
+              ? `${selectedElection.class} — ${selectedElection.course} (${selectedElection.period}): ${({ draft: 'Não iniciada', open: 'Em andamento', closed: 'Encerrada' })[selectedElection.status] || selectedElection.status}`
+              : 'Nenhuma eleição disponível para o seu curso.'}
+          </p>
+          <button className="primary" onClick={() => setView('elections')}>Acompanhar eleição</button>
         </div>
       )}
 
@@ -1625,12 +1595,56 @@ function CourseManagement() {
 }
 
 function Ata() {
-  const { votes = [], results = [], candidates = [], electionEndedAt } = useContext(AppContext);
+  const { selectedElection, getHeaders, showToast } = useContext(AppContext);
   const [profNome, setProfNome] = useState('');
   const [profMatric, setProfMatric] = useState('');
-  const [ataTurmaInput, setAtaTurmaInput] = useState('A');
-  const [ataCursoInput, setAtaCursoInput] = useState('Engenharia');
+  const [ataData, setAtaData] = useState(null);
+  const [ataLoading, setAtaLoading] = useState(false);
+  const [ataError, setAtaError] = useState('');
+  const ataTurmaInput = selectedElection?.class || '';
+  const ataCursoInput = selectedElection?.course || '';
   const ataRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadAtaData = async () => {
+      if (!selectedElection?.id) {
+        setAtaData(null);
+        setAtaError('Selecione uma eleição para gerar a ata.');
+        return;
+      }
+      setAtaLoading(true);
+      setAtaError('');
+      try {
+        const response = await apiFetch(
+          `${API_URL}/elections/${encodeURIComponent(selectedElection.id)}/ata-data`,
+          { headers: getHeaders() }
+        );
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Não foi possível carregar os dados da ata.');
+        if (!cancelled) setAtaData(data);
+      } catch (error) {
+        if (!cancelled) setAtaError(error.message || 'Erro ao carregar os dados da ata.');
+      } finally {
+        if (!cancelled) setAtaLoading(false);
+      }
+    };
+    loadAtaData();
+    return () => { cancelled = true; };
+  }, [selectedElection?.id]);
+
+  const candidates = ataData?.candidates || [];
+  const scopedResults = (ataData?.results || []).map(item => ({
+    position: item.pos,
+    candidateId: item.cid,
+    total: item.total
+  }));
+  const scopedParticipation = (ataData?.participation || []).map((item, index) => ({
+    id: item.matric || `${item.name}-${index}`,
+    voterMatric: item.matric,
+    voterName: item.name
+  }));
+  const electionEndedAt = ataData?.election?.ended_at || ataData?.election?.endedAt;
 
   const exportPDF = () => {
     if (typeof html2pdf !== 'function') {
@@ -1648,20 +1662,18 @@ function Ata() {
     html2pdf().set(opt).from(element).save();
   };
 
-  const scopedResults = results.filter(v => v.voterClass === ataTurmaInput && v.course === ataCursoInput);
-  const scopedParticipation = votes.filter(v => v.voterClass === ataTurmaInput && v.course === ataCursoInput);
   const { leader: leaderVotes, viceLeader: viceVotes } = tallyResults(scopedResults);
 
   let leaderWinner = null;
   let maxL = 0;
   Object.keys(leaderVotes).forEach(id => {
-    if (leaderVotes[id] > maxL) { maxL = leaderVotes[id]; leaderWinner = candidates.find(c => c.id === id); }
+    if (leaderVotes[id] > maxL) { maxL = leaderVotes[id]; leaderWinner = candidates.find(c => String(c.id) === String(id)); }
   });
 
   let viceWinner = null;
   let maxV = 0;
   Object.keys(viceVotes).forEach(id => {
-    if (viceVotes[id] > maxV) { maxV = viceVotes[id]; viceWinner = candidates.find(c => c.id === id); }
+    if (viceVotes[id] > maxV) { maxV = viceVotes[id]; viceWinner = candidates.find(c => String(c.id) === String(id)); }
   });
 
   const dataEleicao = electionEndedAt ? new Date(electionEndedAt) : null;
@@ -1673,18 +1685,23 @@ function Ata() {
   return (
     <div>
       <h2>Ata Oficial de Eleição</h2>
+      {ataLoading && <p>Carregando dados da eleição...</p>}
+      {ataError && <div className="card" role="alert">{ataError}</div>}
+      {selectedElection?.status !== 'closed' && selectedElection && (
+        <div className="card" role="status">A ata oficial fica disponível após o encerramento desta eleição. Situação atual: {selectedElection.status === 'open' ? 'Em andamento' : 'Não iniciada'}.</div>
+      )}
       <div className="card">
         <div className="card-header">Configurações da Ata</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
           <div><label>Professor (Nome)</label><input value={profNome} onChange={e => setProfNome(e.target.value)} placeholder="Nome do Professor" /></div>
           <div><label>Professor (Matrícula)</label><input value={profMatric} onChange={e => setProfMatric(e.target.value)} placeholder="Matrícula" /></div>
-          <div><label>Turma</label><input value={ataTurmaInput} onChange={e => setAtaTurmaInput(e.target.value)} placeholder="Ex: A" /></div>
-          <div><label>Curso</label><input value={ataCursoInput} onChange={e => setAtaCursoInput(e.target.value)} placeholder="Ex: Engenharia" /></div>
+          <div><label>Turma</label><input value={ataTurmaInput} readOnly /></div>
+          <div><label>Curso</label><input value={ataCursoInput} readOnly /></div>
         </div>
       </div>
       <div className="card" style={{ marginBottom: '24px', display: 'flex', gap: '10px' }}>
-        <button className="primary" onClick={() => window.print()} style={{ flex: 1 }}>🖨️ Imprimir Ata</button>
-        <button className="primary" onClick={exportPDF} style={{ flex: 1, background: 'var(--success)' }}>📥 Salvar em PDF</button>
+        <button className="primary" disabled={ataLoading || !ataData || selectedElection?.status !== 'closed'} onClick={() => window.print()} style={{ flex: 1 }}>🖨️ Imprimir Ata</button>
+        <button className="primary" disabled={ataLoading || !ataData || selectedElection?.status !== 'closed'} onClick={exportPDF} style={{ flex: 1, background: 'var(--success)' }}>📥 Salvar em PDF</button>
       </div>
 
       <div ref={ataRef}>

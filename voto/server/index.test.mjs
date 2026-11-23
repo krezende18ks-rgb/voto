@@ -916,6 +916,17 @@ describe('API ClassVote - eleições por turma', () => {
     ).toBe('open');
   });
 
+  it('não permite ao professor iniciar uma eleição', async () => {
+    const response = await request(app)
+      .post('/elections/election_test_draft/start')
+      .set(auth(2));
+
+    expect(response.status).toBe(403);
+    expect(
+      state.elections.find(row => row.id === 'election_test_draft').status
+    ).toBe('draft');
+  });
+
   it('permite ao coordenador encerrar uma eleição aberta do próprio curso', async () => {
     const response = await request(app)
       .post('/elections/election_test_1/end')
@@ -924,6 +935,30 @@ describe('API ClassVote - eleições por turma', () => {
     expect(response.status).toBe(200);
     expect(response.body.election.status).toBe('closed');
     expect(response.body.election.endedAt).toBeTruthy();
+  });
+
+  it('permite ao professor encerrar uma eleição aberta do próprio curso', async () => {
+    const response = await request(app)
+      .post('/elections/election_test_1/end')
+      .set(auth(2));
+
+    expect(response.status).toBe(200);
+    expect(response.body.election.status).toBe('closed');
+    expect(response.body.election.endedAt).toBeTruthy();
+  });
+
+  it('não permite ao professor encerrar eleição de outro curso', async () => {
+    const otherCourseElection = state.elections.find(
+      row => row.id === 'election_test_other_course'
+    );
+    otherCourseElection.status = 'open';
+
+    const response = await request(app)
+      .post('/elections/election_test_other_course/end')
+      .set(auth(2));
+
+    expect(response.status).toBe(404);
+    expect(otherCourseElection.status).toBe('open');
   });
 
   it('não permite ao coordenador iniciar eleição de outro curso', async () => {
