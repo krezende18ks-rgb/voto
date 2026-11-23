@@ -113,11 +113,7 @@ export default function App() {
     election => election.id === selectedElection?.id
   );
 
-  if (isVoter) {
-    setSelectedElection(currentElection || validElections[0] || null);
-  } else if (!currentElection) {
-    setSelectedElection(validElections[0] || null);
-  }
+  setSelectedElection(currentElection || validElections[0] || null);
 }
 
 
