@@ -2,7 +2,7 @@
 import { isCandidateEligible, tallyResults } from './election.js';
 
 // API same-origin: funciona no computador e em celulares conectados pela rede local.
-const API_URL = '';
+const API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
 const AppContext = createContext();
 let authToken = sessionStorage.getItem('authToken') || '';
 const apiFetch = (url, options = {}) => {

@@ -149,6 +149,23 @@ app.use((req, res, next) => {
 const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173').split(',').map(v => v.trim()).filter(Boolean);
 app.use(cors({ origin(origin, callback) { if (!origin || allowedOrigins.includes(origin)) return callback(null, true); return callback(new Error('Origem não autorizada pelo CORS.')); }, methods: ['GET', 'POST', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization'] }));
 app.use(express.json({ limit: '32kb' }));
+// Modo demonstração: permite consultas e login, mas bloqueia alterações.
+app.use((req, res, next) => {
+  const demoMode = process.env.DEMO_MODE === 'true';
+  const writeMethods = ['POST', 'PUT', 'PATCH', 'DELETE'];
+
+  if (
+    demoMode &&
+    writeMethods.includes(req.method) &&
+    req.path !== '/login'
+  ) {
+    return res.status(403).json({
+      error: 'Esta demonstração é somente para consulta. Operações de escrita estão desativadas.',
+    });
+  }
+
+  next();
+});
 
 const distPath = path.join(__dirname, '../votação-dist');
 app.use(express.static(distPath));
@@ -1478,5 +1495,3 @@ if (require.main === module) {
   initializeDatabase().then(() => app.listen(PORT, '0.0.0.0', () => console.log(`Servidor disponível na porta ${PORT}`))).catch((err) => { console.error('Falha ao inicializar o banco:', err); process.exit(1); });
 }
 module.exports = app;
-
-

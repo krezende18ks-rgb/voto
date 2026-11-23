@@ -1257,3 +1257,67 @@ describe('API ClassVote - votação por eleição', () => {
     expect(response.body.error).toContain('Hash do bloco inválido');
   });
 });
+describe('API ClassVote - modo demonstração', () => {
+  it('bloqueia operações de escrita, mas permite login e consultas', async () => {
+    const previousDemoMode = process.env.DEMO_MODE;
+    process.env.DEMO_MODE = 'true';
+
+    try {
+      // Health check público.
+      const health = await request(app).get('/health');
+      expect(health.status).toBe(200);
+
+      // Consulta autenticada de eleições continua funcionando.
+      const elections = await request(app)
+        .get('/elections')
+        .set(auth(1));
+
+      expect(elections.status).toBe(200);
+      expect(
+        state.queries.some(item => /FROM elections/i.test(item.sql))
+      ).toBe(true);
+
+      // Login continua acessível.
+      const login = await request(app)
+        .post('/login')
+        .send({});
+
+      expect([400, 429]).toContain(login.status);
+
+      // Criação de eleição bloqueada.
+      const election = await request(app)
+        .post('/elections')
+        .set(auth(4))
+        .send({});
+
+      expect(election.status).toBe(403);
+
+      // Registro de voto bloqueado.
+      const vote = await request(app)
+        .post('/elections/election_test_1/votes')
+        .set(auth(1))
+        .send({});
+
+      expect(vote.status).toBe(403);
+
+      // Exclusão de usuário bloqueada.
+      const deletion = await request(app)
+        .delete('/users/aluno@teste.com')
+        .set(auth(4));
+
+      expect(deletion.status).toBe(403);
+
+      // Nenhuma consulta de escrita deve chegar ao banco.
+      expect(
+        state.queries.every(item => /^\s*SELECT\b/i.test(item.sql))
+      ).toBe(true);
+
+    } finally {
+      if (previousDemoMode === undefined) {
+        delete process.env.DEMO_MODE;
+      } else {
+        process.env.DEMO_MODE = previousDemoMode;
+      }
+    }
+  });
+});
