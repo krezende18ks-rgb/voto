@@ -666,17 +666,6 @@ function Dashboard() {
         </div>
       )}
 
-      {role === 'coordinator' && (
-        <div className="card" style={{ background: 'var(--accent-light)', border: '1px solid var(--accent)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div><strong>Controle da Votação - {user?.course || 'Curso não definido'}</strong></div>
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <button className="primary" onClick={startVoting} disabled={votingStarted} style={{ background: 'var(--success)' }}>Iniciar</button>
-              <button className="primary" onClick={endVoting} disabled={votingEnded} style={{ background: 'var(--critical)' }}>Encerrar</button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {(role === 'teacher' || role === 'coordinator') && (
         <div style={{ marginBottom: '20px' }}>
