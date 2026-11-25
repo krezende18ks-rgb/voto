@@ -53,7 +53,10 @@ const mockDb = {
     }
 
     // Nova votação: eleição aberta da turma e curso.
-    if (/SELECT id, class, course, status\s+FROM elections/i.test(sql)) {
+    if (
+      /SELECT id, class, course, status\s+FROM elections/i.test(sql) &&
+      !/FOR UPDATE/i.test(sql)
+    ) {
       const election = state.elections.find(row =>
         row.id === params[0] &&
         row.class === params[1] &&
@@ -202,8 +205,38 @@ const mockDb = {
       return { rows, rowCount: rows.length };
     }
 
+    if (
+      /FROM candidates/i.test(sql) &&
+      /SELECT id, name, matric, phone, email, position/i.test(sql)
+    ) {
+      const rows = state.candidates
+        .filter(row =>
+          !row.election_id &&
+          row.class === params[0] &&
+          row.course === params[1]
+        )
+        .map(({ id, name, matric, phone, email, position }) => ({
+          id, name, matric, phone, email, position
+        }));
+      return { rows, rowCount: rows.length };
+    }
+
     if (/INSERT INTO candidates/i.test(sql)) {
       const [id, name, matric, phone, email, candidateClass, course, position] = params;
+      const duplicate = state.candidates.some(row =>
+        !row.election_id &&
+        row.class === candidateClass &&
+        row.course === course &&
+        String(row.matric).trim().toLowerCase() === String(matric).trim().toLowerCase()
+      );
+      if (duplicate) {
+        if (/ON CONFLICT DO NOTHING/i.test(sql)) {
+          return { rows: [], rowCount: 0 };
+        }
+        const error = new Error('duplicate candidate');
+        error.code = '23505';
+        throw error;
+      }
 
       const candidate = {
         id,
@@ -234,16 +267,13 @@ const mockDb = {
     }
 
     if (/INSERT INTO election_candidates/i.test(sql)) {
-      const [
-        electionId,
-        courseScope,
-        candidateId,
-        name,
-        matric,
-        phone,
-        email,
-        position
-      ] = params;
+      let electionId, courseScope, candidateId, name, matric, phone, email, position;
+
+      if (params.length === 7) {
+        [candidateId, electionId, name, matric, phone, email, position] = params;
+      } else {
+        [electionId, courseScope, candidateId, name, matric, phone, email, position] = params;
+      }
 
       const election = state.elections.find(row =>
         row.id === electionId &&
@@ -251,16 +281,13 @@ const mockDb = {
         (!courseScope || row.course === courseScope)
       );
 
-      if (!election) {
-        return { rows: [], rowCount: 0 };
-      }
+      if (!election) return { rows: [], rowCount: 0 };
 
-      if (
-        state.candidateDuplicate ||
-        state.candidates.some(row =>
-          row.election_id === electionId && row.matric === matric
-        )
-      ) {
+      if (state.candidateDuplicate || state.candidates.some(row =>
+        row.election_id === electionId &&
+        String(row.matric).trim().toLowerCase() === String(matric).trim().toLowerCase()
+      )) {
+        if (/ON CONFLICT/i.test(sql)) return { rows: [], rowCount: 0 };
         const error = new Error('duplicate key');
         error.code = '23505';
         throw error;
@@ -276,10 +303,19 @@ const mockDb = {
         email,
         position,
       };
-
       state.candidates.push(candidate);
-
       return { rows: [candidate], rowCount: 1 };
+    }
+
+    if (/COUNT\(\*\) FILTER \(WHERE position = 'leader'\)/i.test(sql)) {
+      const rows = state.candidates.filter(row => row.election_id === params[0]);
+      return {
+        rows: [{
+          leaders: rows.filter(row => row.position === 'leader').length,
+          vice_leaders: rows.filter(row => row.position === 'viceLeader').length,
+        }],
+        rowCount: 1,
+      };
     }
 
     if (/FROM election_candidates/i.test(sql)) {
@@ -366,7 +402,7 @@ const mockDb = {
 
         if (/course = \$3/i.test(sql)) {
           rows = rows.filter(row => row.course === params[2]);
-        } else if (/course = \$2/i.test(sql)) {
+        } else if (/course = \$2/i.test(sql) && params[1] != null) {
           rows = rows.filter(row => row.course === params[1]);
         }
       } else if (/class = \$1/i.test(sql) && /course = \$2/i.test(sql)) {
@@ -496,6 +532,42 @@ beforeEach(() => {
     },
   ];
 
+  // Candidatos gerais usados para preparar eleições ainda em rascunho.
+  state.candidates.push(
+    {
+      id: 'cand_class_b_leader',
+      name: 'Candidato B',
+      matric: 'MAT-B-001',
+      class: 'B',
+      course: 'Engenharia',
+      position: 'leader',
+    },
+    {
+      id: 'cand_class_b_vice',
+      name: 'Vice B',
+      matric: 'MAT-B-002',
+      class: 'B',
+      course: 'Engenharia',
+      position: 'viceLeader',
+    },
+    {
+      id: 'cand_comp_leader',
+      name: 'Candidato Computação',
+      matric: 'MAT-COMP-001',
+      class: 'B',
+      course: 'Computação',
+      position: 'leader',
+    },
+    {
+      id: 'cand_comp_vice',
+      name: 'Vice Computação',
+      matric: 'MAT-COMP-002',
+      class: 'B',
+      course: 'Computação',
+      position: 'viceLeader',
+    }
+  );
+
   state.elections.push({
     id: 'election_test_draft',
     class: 'A',
@@ -604,6 +676,36 @@ describe('API ClassVote - cadastro legado de candidatos', () => {
       .send({ ...candidato, id: 'cand_coord_100' });
 
     expect(response.status).toBe(201);
+  });
+
+  it('bloqueia matrícula duplicada no mesmo curso e turma, ignorando maiúsculas e espaços', async () => {
+    state.candidates.push({
+      id: 'cand_existente',
+      name: 'Candidato Existente',
+      matric: 'MAT-DUP-001',
+      class: 'A',
+      course: 'Engenharia',
+      position: 'leader',
+    });
+
+    const response = await request(app)
+      .post('/candidates')
+      .set(auth(3))
+      .send({
+        ...candidato,
+        id: 'cand_duplicado',
+        matric: ' mat-dup-001 ',
+        class: 'A',
+        course: 'Engenharia',
+      });
+
+    expect(response.status).toBe(409);
+    expect(state.candidates.filter(row =>
+      !row.election_id &&
+      row.class === 'A' &&
+      row.course === 'Engenharia' &&
+      String(row.matric).trim().toLowerCase() === 'mat-dup-001'
+    )).toHaveLength(1);
   });
 
   it('permite ao reitor cadastrar candidato em outro curso', async () => {
@@ -997,6 +1099,16 @@ describe('API ClassVote - eleições por turma', () => {
 
     expect(response.status).toBe(200);
     expect(response.body.election.status).toBe('open');
+  });
+
+  it('não inicia eleição sem ao menos um líder e um vice-líder', async () => {
+    const response = await request(app)
+      .post('/elections/election_test_draft/start')
+      .set(auth(3));
+
+    expect(response.status).toBe(409);
+    expect(state.elections.find(row => row.id === 'election_test_draft').status)
+      .toBe('draft');
   });
   it('bloqueia consulta de eleições sem autenticação', async () => {
     const response = await request(app).get('/elections');

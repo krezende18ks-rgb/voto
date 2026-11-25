@@ -410,71 +410,132 @@ app.post(
     const courseScope = req.auth.role === 'coordinator'
       ? req.auth.course
       : null;
+    let client;
 
     try {
-      const result = await db.query(
+      client = await db.connect();
+      await client.query('BEGIN');
+
+      const electionResult = await client.query(
+        `
+          SELECT id, class, course, status
+          FROM elections
+          WHERE id = $1
+            AND ($2::text IS NULL OR course = $2)
+          FOR UPDATE
+        `,
+        [req.params.id, courseScope]
+      );
+
+      if (electionResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Eleição não encontrada.' });
+      }
+
+      const election = electionResult.rows[0];
+
+      if (election.status === 'open') {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'Esta eleição já está aberta.' });
+      }
+      if (election.status === 'closed') {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'Uma eleição encerrada não pode ser reaberta.' });
+      }
+      if (election.status !== 'draft') {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'Status inválido para iniciar a eleição.' });
+      }
+
+      // Copia candidatos gerais para o retrato imutável da eleição.
+      // A restrição UNIQUE (election_id, matric) evita duplicações.
+      const candidatesResult = await client.query(
+        `
+          SELECT id, name, matric, phone, email, position
+          FROM candidates
+          WHERE class = $1
+            AND course = $2
+          ORDER BY position, name, id
+        `,
+        [election.class, election.course]
+      );
+
+      for (const candidate of candidatesResult.rows) {
+        await client.query(
+          `
+            INSERT INTO election_candidates (
+              id, election_id, name, matric, phone, email, position
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT DO NOTHING
+          `,
+          [
+            `ec_${crypto.randomUUID()}`,
+            election.id,
+            candidate.name,
+            String(candidate.matric).trim().toUpperCase(),
+            candidate.phone || null,
+            candidate.email || null,
+            candidate.position
+          ]
+        );
+      }
+
+      const countResult = await client.query(
+        `
+          SELECT
+            COUNT(*) FILTER (WHERE position = 'leader')::integer AS leaders,
+            COUNT(*) FILTER (WHERE position = 'viceLeader')::integer AS vice_leaders
+          FROM election_candidates
+          WHERE election_id = $1
+        `,
+        [election.id]
+      );
+
+      if (
+        !countResult.rows[0] ||
+        countResult.rows[0].leaders < 1 ||
+        countResult.rows[0].vice_leaders < 1
+      ) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: 'Para iniciar a eleição, cadastre ao menos um candidato a líder e um a vice-líder.'
+        });
+      }
+
+      const result = await client.query(
         `
           UPDATE elections
           SET status = 'open',
               started_at = COALESCE(started_at, NOW())
           WHERE id = $1
             AND status = 'draft'
-            AND ($2::text IS NULL OR course = $2)
           RETURNING ${ELECTION_FIELDS}
         `,
-        [req.params.id, courseScope]
+        [election.id]
       );
 
-      if (result.rows.length > 0) {
-        return res.json({
-          message: 'Eleição iniciada com sucesso.',
-          election: result.rows[0]
-        });
+      if (result.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'Não foi possível iniciar esta eleição.' });
       }
 
-      const current = await db.query(
-        `
-          SELECT status
-          FROM elections
-          WHERE id = $1
-            AND ($2::text IS NULL OR course = $2)
-          LIMIT 1
-        `,
-        [req.params.id, courseScope]
-      );
-
-      if (current.rows.length === 0) {
-        return res.status(404).json({
-          error: 'Eleição não encontrada.'
-        });
-      }
-
-      if (current.rows[0].status === 'open') {
-        return res.status(409).json({
-          error: 'Esta eleição já está aberta.'
-        });
-      }
-
-      if (current.rows[0].status === 'closed') {
-        return res.status(409).json({
-          error: 'Uma eleição encerrada não pode ser reaberta.'
-        });
-      }
-
-      return res.status(409).json({
-        error: 'Não foi possível iniciar esta eleição.'
+      await client.query('COMMIT');
+      return res.json({
+        message: 'Eleição iniciada com sucesso.',
+        election: result.rows[0]
       });
     } catch (error) {
+      if (client) await client.query('ROLLBACK').catch(() => {});
       if (error.code === '23505') {
         return res.status(409).json({
           error: 'Já existe uma eleição aberta para esta turma e curso.'
         });
       }
-
       console.error('Erro ao iniciar eleição:', error.message);
-      return res.status(500).json({
-        error: 'Não foi possível iniciar a eleição.'
-      });
+      return res.status(500).json({ error: 'Não foi possível iniciar a eleição.' });
+    } finally {
+      if (client) client.release();
     }
   }
 );
@@ -633,7 +694,7 @@ app.post(
       const body = req.body || {};
 
       const name = typeof body.name === 'string' ? body.name.trim() : '';
-      const matric = typeof body.matric === 'string' ? body.matric.trim() : '';
+      const matric = typeof body.matric === 'string' ? body.matric.trim().toUpperCase() : '';
       const phone = typeof body.phone === 'string' ? body.phone.trim() : '';
       const email = typeof body.email === 'string' ? body.email.trim() : '';
       const position = body.position;
@@ -1014,7 +1075,11 @@ app.get('/users/by-class/:class', checkRole(['teacher', 'coordinator', 'rector']
 const CANDIDATE_FIELDS = 'id, name, matric, phone, email, class, course, position';
 app.get('/candidates', checkRole(['voter', 'teacher', 'coordinator', 'rector']), requireCourseScope, async (req, res) => {
   try {
-    const sql = req.auth.role === 'voter' ? `SELECT ${CANDIDATE_FIELDS} FROM candidates WHERE (class=$1 AND (course=$2 OR course IS NULL)) OR (course IS NULL AND lower(class)=lower($2)) ORDER BY class,position,name` : ['coordinator','teacher'].includes(req.auth.role) && req.auth.course ? `SELECT ${CANDIDATE_FIELDS} FROM candidates WHERE course=$1 ORDER BY class,position,name` : `SELECT ${CANDIDATE_FIELDS} FROM candidates ORDER BY class,position,name`;
+    const sql = req.auth.role === 'voter'
+      ? `SELECT id, name, position FROM candidates WHERE class=$1 AND course=$2 ORDER BY class,position,name`
+      : ['coordinator','teacher'].includes(req.auth.role) && req.auth.course
+        ? `SELECT ${CANDIDATE_FIELDS} FROM candidates WHERE course=$1 ORDER BY class,position,name`
+        : `SELECT ${CANDIDATE_FIELDS} FROM candidates ORDER BY class,position,name`;
     const params = req.auth.role === 'voter' ? [req.auth.class, req.auth.course] : ['coordinator','teacher'].includes(req.auth.role) && req.auth.course ? [req.auth.course] : [];
     const { rows } = await db.query(sql, params);
     res.json(rows);
@@ -1074,14 +1139,39 @@ app.post('/candidates', checkRole(['teacher', 'coordinator', 'rector']), async (
       return res.status(400).json({ error: 'A turma informada não existe ou não pertence ao curso selecionado.' });
     }
 
-    await db.query(
-      'INSERT INTO candidates (id, name, matric, phone, email, class, course, position) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
-      [id, String(name).trim(), String(matric).trim(), phone, email, String(cClass).trim(), candidateCourse, position]
+    const inserted = await db.query(
+      `INSERT INTO candidates
+        (id, name, matric, phone, email, class, course, position)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
+      [
+        id,
+        String(name).trim(),
+        String(matric).trim().toUpperCase(),
+        phone || null,
+        email || null,
+        String(cClass).trim(),
+        candidateCourse,
+        position
+      ]
     );
 
-    res.status(201).json({ id });
+    if (inserted.rows.length === 0) {
+      return res.status(409).json({
+        error: 'Já existe um candidato com essa matrícula nesta turma e curso.'
+      });
+    }
+
+    return res.status(201).json({ id: inserted.rows[0].id });
   } catch (err) {
-    res.status(400).json({ error: 'Não foi possível cadastrar o candidato.' });
+    if (err.code === '23505') {
+      return res.status(409).json({
+        error: 'Já existe um candidato com essa matrícula nesta turma e curso.'
+      });
+    }
+    console.error('Erro ao cadastrar candidato:', err.message);
+    return res.status(500).json({ error: 'Não foi possível cadastrar o candidato.' });
   }
 });
 

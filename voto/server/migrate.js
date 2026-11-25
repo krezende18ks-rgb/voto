@@ -19,6 +19,11 @@ const migrations = [
     name: 'data_encerramento',
     file: '003_data_encerramento.sql',
   },
+  {
+    version: '004',
+    name: 'matricula_unica_candidato_turma_curso',
+    file: '004_unique_candidate_enrollment.sql',
+  },
 ];
 
 async function main() {
